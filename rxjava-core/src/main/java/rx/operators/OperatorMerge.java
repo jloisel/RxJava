@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import rx.Observable;
 import rx.Observable.Operator;
 import rx.Subscriber;
-import rx.observers.SynchronizedSubscriber;
+import rx.observers.SerializedSubscriber;
 import rx.subscriptions.CompositeSubscription;
 
 /**
@@ -36,7 +36,7 @@ public final class OperatorMerge<T> implements Operator<T, Observable<? extends 
     @Override
     public Subscriber<Observable<? extends T>> call(final Subscriber<? super T> outerOperation) {
 
-        final Subscriber<T> o = new SynchronizedSubscriber<T>(outerOperation);
+        final Subscriber<T> o = new SerializedSubscriber<T>(outerOperation);
         final CompositeSubscription childrenSubscriptions = new CompositeSubscription();
         outerOperation.add(childrenSubscriptions);
 
@@ -63,20 +63,27 @@ public final class OperatorMerge<T> implements Operator<T, Observable<? extends 
                 runningCount.incrementAndGet();
                 Subscriber<T> i = new InnerObserver();
                 childrenSubscriptions.add(i);
-                innerObservable.subscribe(i);
+                innerObservable.unsafeSubscribe(i);
             }
 
             final class InnerObserver extends Subscriber<T> {
+
+                private boolean innerCompleted = false;
 
                 public InnerObserver() {
                 }
 
                 @Override
                 public void onCompleted() {
-                    if (runningCount.decrementAndGet() == 0 && completed) {
-                        o.onCompleted();
+                    if (!innerCompleted) {
+                        // we check if already completed otherwise a misbehaving Observable that emits onComplete more than once
+                        // will cause the runningCount to decrement multiple times.
+                        innerCompleted = true;
+                        if (runningCount.decrementAndGet() == 0 && completed) {
+                            o.onCompleted();
+                        }
+                        cleanup();
                     }
-                    cleanup();
                 }
 
                 @Override

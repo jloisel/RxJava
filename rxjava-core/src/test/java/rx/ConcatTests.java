@@ -15,7 +15,8 @@
  */
 package rx;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.List;
@@ -25,8 +26,7 @@ import org.junit.Test;
 import rx.CovarianceTest.HorrorMovie;
 import rx.CovarianceTest.Media;
 import rx.CovarianceTest.Movie;
-import rx.Observable.OnSubscribeFunc;
-import rx.subscriptions.Subscriptions;
+import rx.Observable.OnSubscribe;
 
 public class ConcatTests {
 
@@ -35,7 +35,7 @@ public class ConcatTests {
         Observable<String> o1 = Observable.from("one", "two");
         Observable<String> o2 = Observable.from("three", "four");
 
-        List<String> values = Observable.concat(o1, o2).toList().toBlockingObservable().single();
+        List<String> values = Observable.concat(o1, o2).toList().toBlocking().single();
 
         assertEquals("one", values.get(0));
         assertEquals("two", values.get(1));
@@ -51,7 +51,7 @@ public class ConcatTests {
 
         Observable<Observable<String>> os = Observable.from(o1, o2, o3);
 
-        List<String> values = Observable.concat(os).toList().toBlockingObservable().single();
+        List<String> values = Observable.concat(os).toList().toBlocking().single();
 
         assertEquals("one", values.get(0));
         assertEquals("two", values.get(1));
@@ -68,7 +68,7 @@ public class ConcatTests {
         @SuppressWarnings("unchecked")
         Iterable<Observable<String>> is = Arrays.asList(o1, o2, o3);
 
-        List<String> values = Observable.concat(Observable.from(is)).toList().toBlockingObservable().single();
+        List<String> values = Observable.concat(Observable.from(is)).toList().toBlocking().single();
 
         assertEquals("one", values.get(0));
         assertEquals("two", values.get(1));
@@ -83,7 +83,9 @@ public class ConcatTests {
 
         Observable<Observable<Media>> os = Observable.from(o1, o2);
 
-        List<Media> values = Observable.concat(os).toList().toBlockingObservable().single();
+        List<Media> values = Observable.concat(os).toList().toBlocking().single();
+        
+        assertEquals(4, values.size());
     }
 
     @Test
@@ -93,7 +95,9 @@ public class ConcatTests {
 
         Observable<Observable<Media>> os = Observable.from(o1, o2);
 
-        List<Media> values = Observable.concat(os).toList().toBlockingObservable().single();
+        List<Media> values = Observable.concat(os).toList().toBlocking().single();
+
+        assertEquals(5, values.size());
     }
 
     @Test
@@ -101,7 +105,7 @@ public class ConcatTests {
         Observable<Movie> o1 = Observable.from(new HorrorMovie(), new Movie());
         Observable<Media> o2 = Observable.from(new Media(), new HorrorMovie());
 
-        List<Media> values = Observable.concat(o1, o2).toList().toBlockingObservable().single();
+        List<Media> values = Observable.concat(o1, o2).toList().toBlocking().single();
 
         assertTrue(values.get(0) instanceof HorrorMovie);
         assertTrue(values.get(1) instanceof Movie);
@@ -112,21 +116,20 @@ public class ConcatTests {
     @Test
     public void testConcatCovariance4() {
 
-        Observable<Movie> o1 = Observable.create(new OnSubscribeFunc<Movie>() {
+        Observable<Movie> o1 = Observable.create(new OnSubscribe<Movie>() {
 
             @Override
-            public Subscription onSubscribe(Observer<? super Movie> o) {
+            public void call(Subscriber<? super Movie> o) {
                 o.onNext(new HorrorMovie());
                 o.onNext(new Movie());
                 //                o.onNext(new Media()); // correctly doesn't compile
                 o.onCompleted();
-                return Subscriptions.empty();
             }
         });
 
         Observable<Media> o2 = Observable.from(new Media(), new HorrorMovie());
 
-        List<Media> values = Observable.concat(o1, o2).toList().toBlockingObservable().single();
+        List<Media> values = Observable.concat(o1, o2).toList().toBlocking().single();
 
         assertTrue(values.get(0) instanceof HorrorMovie);
         assertTrue(values.get(1) instanceof Movie);

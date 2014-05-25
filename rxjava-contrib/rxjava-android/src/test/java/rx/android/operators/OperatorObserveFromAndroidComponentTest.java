@@ -1,5 +1,5 @@
 /**
- * Copyright 2013 Netflix, Inc.
+ * Copyright 2014 Netflix, Inc.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,22 +68,6 @@ public class OperatorObserveFromAndroidComponentTest {
     public void setupMocks() {
         MockitoAnnotations.initMocks(this);
         when(mockFragment.isAdded()).thenReturn(true);
-    }
-
-    @Test
-    public void itThrowsIfObserverSubscribesFromBackgroundThread() throws Exception {
-        final Observable<Integer> testObservable = Observable.from(1);
-        final Future<Object> future = Executors.newSingleThreadExecutor().submit(new Callable<Object>() {
-            @Override
-            public Object call() throws Exception {
-                OperatorObserveFromAndroidComponent.observeFromAndroidComponent(
-                        testObservable, mockFragment).subscribe(mockObserver);
-                return null;
-            }
-        });
-        future.get(1, TimeUnit.SECONDS);
-        verify(mockObserver).onError(any(IllegalStateException.class));
-        verifyNoMoreInteractions(mockObserver);
     }
 
     // TODO needs to be fixed, see comments inline below

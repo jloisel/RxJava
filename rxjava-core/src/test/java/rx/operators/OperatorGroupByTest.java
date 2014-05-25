@@ -15,8 +15,14 @@
  */
 package rx.operators;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -29,20 +35,20 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.junit.Ignore;
 import org.junit.Test;
 import org.mockito.Matchers;
 
+import rx.Notification;
 import rx.Observable;
 import rx.Observable.OnSubscribe;
 import rx.Observer;
 import rx.Subscriber;
-import rx.Subscription;
 import rx.functions.Action0;
 import rx.functions.Action1;
 import rx.functions.Func1;
 import rx.observables.GroupedObservable;
 import rx.schedulers.Schedulers;
-import rx.subscriptions.Subscriptions;
 
 public class OperatorGroupByTest {
 
@@ -131,7 +137,7 @@ public class OperatorGroupByTest {
 
         final ConcurrentHashMap<K, Collection<V>> result = new ConcurrentHashMap<K, Collection<V>>();
 
-        observable.toBlockingObservable().forEach(new Action1<GroupedObservable<K, V>>() {
+        observable.toBlocking().forEach(new Action1<GroupedObservable<K, V>>() {
 
             @Override
             public void call(final GroupedObservable<K, V> o) {
@@ -165,10 +171,10 @@ public class OperatorGroupByTest {
         final int count = 100;
         final int groupCount = 2;
 
-        Observable<Event> es = Observable.create(new Observable.OnSubscribeFunc<Event>() {
+        Observable<Event> es = Observable.create(new Observable.OnSubscribe<Event>() {
 
             @Override
-            public Subscription onSubscribe(final Observer<? super Event> observer) {
+            public void call(final Subscriber<? super Event> observer) {
                 System.out.println("*** Subscribing to EventStream ***");
                 subscribeCounter.incrementAndGet();
                 new Thread(new Runnable() {
@@ -185,7 +191,6 @@ public class OperatorGroupByTest {
                     }
 
                 }).start();
-                return Subscriptions.empty();
             }
 
         });
@@ -635,7 +640,7 @@ public class OperatorGroupByTest {
                 }
             }
 
-        }).toBlockingObservable().forEach(new Action1<String>() {
+        }).toBlocking().forEach(new Action1<String>() {
 
             @Override
             public void call(String s) {
@@ -650,6 +655,7 @@ public class OperatorGroupByTest {
 
     @Test
     public void testFirstGroupsCompleteAndParentSlowToThenEmitFinalGroupsWhichThenSubscribesOnAndDelaysAndThenCompletes() throws InterruptedException {
+        System.err.println("----------------------------------------------------------------------------------------------");
         final CountDownLatch first = new CountDownLatch(2); // there are two groups to first complete
         final ArrayList<String> results = new ArrayList<String>();
         Observable.create(new OnSubscribe<Integer>() {
@@ -701,18 +707,32 @@ public class OperatorGroupByTest {
 
                             });
                 } else {
-                    return group.nest().lift(new OperatorSubscribeOnBounded<Integer>(Schedulers.newThread(), 1)).delay(400, TimeUnit.MILLISECONDS).map(new Func1<Integer, String>() {
+                    return group.subscribeOn(Schedulers.newThread()).delay(400, TimeUnit.MILLISECONDS).map(new Func1<Integer, String>() {
 
                         @Override
                         public String call(Integer t1) {
                             return "last group: " + t1;
                         }
 
+                    }).doOnEach(new Action1<Notification<? super String>>() {
+
+                        @Override
+                        public void call(Notification<? super String> t1) {
+                            System.err.println("subscribeOn notification => " + t1);
+                        }
+
                     });
                 }
             }
 
-        }).toBlockingObservable().forEach(new Action1<String>() {
+        }).doOnEach(new Action1<Notification<? super String>>() {
+
+            @Override
+            public void call(Notification<? super String> t1) {
+                System.err.println("outer notification => " + t1);
+            }
+
+        }).toBlocking().forEach(new Action1<String>() {
 
             @Override
             public void call(String s) {
@@ -789,7 +809,7 @@ public class OperatorGroupByTest {
                 }
             }
 
-        }).toBlockingObservable().forEach(new Action1<String>() {
+        }).toBlocking().forEach(new Action1<String>() {
 
             @Override
             public void call(String s) {
@@ -827,7 +847,7 @@ public class OperatorGroupByTest {
 
             @Override
             public Observable<String> call(final GroupedObservable<Integer, Integer> group) {
-                return group.nest().lift(new OperatorSubscribeOnBounded<Integer>(Schedulers.newThread(), 0)).map(new Func1<Integer, String>() {
+                return group.subscribeOn(Schedulers.newThread()).map(new Func1<Integer, String>() {
 
                     @Override
                     public String call(Integer t1) {
@@ -838,7 +858,14 @@ public class OperatorGroupByTest {
                 });
             }
 
-        }).toBlockingObservable().forEach(new Action1<String>() {
+        }).doOnEach(new Action1<Notification<? super String>>() {
+
+            @Override
+            public void call(Notification<? super String> t1) {
+                System.out.println("notification => " + t1);
+            }
+
+        }).toBlocking().forEach(new Action1<String>() {
 
             @Override
             public void call(String s) {
@@ -886,7 +913,7 @@ public class OperatorGroupByTest {
                 });
             }
 
-        }).toBlockingObservable().forEach(new Action1<String>() {
+        }).toBlocking().forEach(new Action1<String>() {
 
             @Override
             public void call(String s) {

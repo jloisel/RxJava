@@ -20,6 +20,8 @@ import rx.functions.FuncN
 import rx.Observable.OnSubscribeFunc
 import rx.lang.scala.observables.ConnectableObservable
 import scala.concurrent.duration
+import java.util
+import collection.JavaConversions._
 
 
 /**
@@ -46,6 +48,28 @@ import scala.concurrent.duration
  *         the observer
  * @define subscribeObserverParamScheduler 
  *         the [[rx.lang.scala.Scheduler]] on which Observers subscribe to the Observable
+ *
+ * @define subscribeSubscriberMain
+ * Call this method to subscribe an [[Subscriber]] for receiving items and notifications from the [[Observable]].
+ *
+ * A typical implementation of `subscribe` does the following:
+ *
+ * It stores a reference to the Observer in a collection object, such as a `List[T]` object.
+ *
+ * It returns a reference to the [[rx.lang.scala.Subscription]] interface. This enables [[Subscriber]]s to
+ * unsubscribe, that is, to stop receiving items and notifications before the Observable stops
+ * sending them, which also invokes the Subscriber's [[rx.lang.scala.Observer.onCompleted onCompleted]] method.
+ *
+ * An [[Observable]] instance is responsible for accepting all subscriptions
+ * and notifying all [[Subscriber]]s. Unless the documentation for a particular
+ * [[Observable]] implementation indicates otherwise, [[Subscriber]]s should make no
+ * assumptions about the order in which multiple [[Subscriber]]s will receive their notifications.
+ *
+ * @define subscribeSubscriberParamObserver
+ *         the [[Subscriber]]
+ * @define subscribeSubscriberParamScheduler
+ *         the [[rx.lang.scala.Scheduler]] on which [[Subscriber]]s subscribe to the Observable
+ *
  * @define subscribeAllReturn 
  *         a [[rx.lang.scala.Subscription]] reference whose `unsubscribe` method can be called to  stop receiving items
  *         before the Observable has finished sending them
@@ -75,8 +99,9 @@ import scala.concurrent.duration
  */
 trait Observable[+T]
 {
+  import scala.collection.JavaConverters._
   import scala.collection.Seq
-  import scala.concurrent.duration.{Duration, TimeUnit}
+  import scala.concurrent.duration.{Duration, TimeUnit, MILLISECONDS}
   import rx.functions._
   import rx.lang.scala.observables.BlockingObservable
   import ImplicitFunctionConversions._
@@ -97,17 +122,6 @@ trait Observable[+T]
    * $subscribeObserverMain
    *
    * @param observer $subscribeObserverParamObserver
-   * @param scheduler $subscribeObserverParamScheduler
-   * @return $subscribeAllReturn
-   */
-  def subscribe(observer: Observer[T], scheduler: Scheduler): Subscription = {
-    asJavaObservable.subscribe(observer.asJavaObserver, scheduler)
-  }
-
-  /**
-   * $subscribeObserverMain
-   *
-   * @param observer $subscribeObserverParamObserver
    * @return $subscribeAllReturn
    */
   def subscribe(observer: Observer[T]): Subscription = {
@@ -121,6 +135,26 @@ trait Observable[+T]
    * @return $subscribeAllReturn
    */
   def apply(observer: Observer[T]): Subscription = subscribe(observer)
+
+  /**
+   * $subscribeSubscriberMain
+   *
+   * @param subscriber $subscribeSubscriberParamObserver
+   * @return $subscribeAllReturn
+   */
+  def subscribe(subscriber: Subscriber[T]): Subscription = {
+    // Add the casting to avoid compile error "ambiguous reference to overloaded definition"
+    val thisJava = asJavaObservable.asInstanceOf[rx.Observable[T]]
+    thisJava.subscribe(subscriber.asJavaSubscriber)
+  }
+
+  /**
+   * $subscribeSubscriberMain
+   *
+   * @param subscriber $subscribeSubscriberParamObserver
+   * @return $subscribeAllReturn
+   */
+  def apply(subscriber: Subscriber[T]): Subscription = subscribe(subscriber)
 
   /**
    * $subscribeCallbacksMainNoNotifications
@@ -163,48 +197,6 @@ trait Observable[+T]
   }
 
   /**
-   * $subscribeCallbacksMainWithNotifications
-   *
-   * @param onNext $subscribeCallbacksParamOnNext
-   * @param onError $subscribeCallbacksParamOnError
-   * @param onCompleted $subscribeCallbacksParamOnComplete
-   * @param scheduler $subscribeCallbacksParamScheduler
-   * @return $subscribeAllReturn
-   */
-  def subscribe(onNext: T => Unit, onError: Throwable => Unit, onCompleted: () => Unit, scheduler: Scheduler): Subscription = {
-    asJavaObservable.subscribe(scalaFunction1ProducingUnitToAction1(onNext),
-      scalaFunction1ProducingUnitToAction1(onError),
-      scalaFunction0ProducingUnitToAction0(onCompleted),
-      scheduler)
-  }
-
-  /**
-   * $subscribeCallbacksMainWithNotifications
-   *
-   * @param onNext $subscribeCallbacksParamOnNext
-   * @param onError $subscribeCallbacksParamOnError
-   * @param scheduler $subscribeCallbacksParamScheduler
-   * @return $subscribeAllReturn
-   */
-  def subscribe(onNext: T => Unit, onError: Throwable => Unit, scheduler: Scheduler): Subscription = {
-    asJavaObservable.subscribe(
-      scalaFunction1ProducingUnitToAction1(onNext),
-      scalaFunction1ProducingUnitToAction1(onError),
-      scheduler)
-  }
-
-  /**
-   * $subscribeCallbacksMainNoNotifications
-   *
-   * @param onNext $subscribeCallbacksParamOnNext
-   * @param scheduler $subscribeCallbacksParamScheduler
-   * @return $subscribeAllReturn
-   */
-  def subscribe(onNext: T => Unit, scheduler: Scheduler): Subscription = {
-    asJavaObservable.subscribe(scalaFunction1ProducingUnitToAction1(onNext), scheduler)
-  }
-
-  /**
    * Returns a pair of a start function and an [[rx.lang.scala.Observable]] that upon calling the start function causes the source Observable to
    * push results into the specified subject.
    *
@@ -213,10 +205,34 @@ trait Observable[+T]
    * @return a pair of a start function and an [[rx.lang.scala.Observable]] such that when the start function
    *         is called, the Observable starts to push results into the specified Subject
    */
-  def multicast[R >: T](subject: rx.lang.scala.Subject[R]): (() => Subscription, Observable[R]) = {
+  def multicast[R >: T](subject: rx.lang.scala.Subject[R]): ConnectableObservable[R] = {
     val s: rx.subjects.Subject[_ >: T, _<: R] = subject.asJavaSubject
-    val javaCO: rx.observables.ConnectableObservable[R] = asJavaObservable.multicast(s)
-    (() => javaCO.connect(), toScalaObservable(javaCO))
+    new ConnectableObservable[R](asJavaObservable.multicast(s))
+  }
+
+  /**
+   * Returns an Observable that emits items produced by multicasting the source Observable within a selector function.
+   *
+   * @param subjectFactory the `Subject` factory
+   * @param selector the selector function, which can use the multicasted source Observable subject to the policies
+   *                 enforced by the created `Subject`
+   * @return an Observable that emits the items produced by multicasting the source Observable within a selector function
+   */
+  def multicast[R >: T, U](subjectFactory: () => rx.lang.scala.Subject[R], selector: Observable[R] => Observable[U]): Observable[U] = {
+    val subjectFactoryJava: Func0[rx.subjects.Subject[_ >: T, _ <: R]] = () => subjectFactory().asJavaSubject
+    val selectorJava: Func1[rx.Observable[R], rx.Observable[U]] =
+      (jo: rx.Observable[R]) => selector(toScalaObservable[R](jo)).asJavaObservable.asInstanceOf[rx.Observable[U]]
+    toScalaObservable[U](asJavaObservable.multicast[R, U](subjectFactoryJava, selectorJava))
+  }
+
+  /**
+   * Returns an Observable that first emits the items emitted by `this`, and then `elem`.
+   *
+   * @param elem the item to be appended
+   * @return  an Observable that first emits the items emitted by `this`, and then `elem`.
+   */
+  def :+[U >: T](elem: U): Observable[U] = {
+    this ++ Observable.items(elem)
   }
 
   /**
@@ -234,6 +250,19 @@ trait Observable[+T]
     val o1: rx.Observable[_ <: U] = this.asJavaObservable
     val o2: rx.Observable[_ <: U] = that.asJavaObservable
     toScalaObservable(rx.Observable.concat(o1, o2))
+  }
+
+  /**
+   * Returns an Observable that emits a specified item before it begins to emit items emitted by the source Observable.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/startWith.png">
+   *
+   * @param elem the item to emit
+   * @return an Observable that emits the specified item before it begins to emit items emitted by the source Observable
+   */
+  def +:[U >: T](elem: U): Observable[U] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[U]]
+    toScalaObservable(thisJava.startWith(elem))
   }
 
   /**
@@ -261,13 +290,13 @@ trait Observable[+T]
    *
    * A well-behaved Observable does not interleave its invocations of the [[rx.lang.scala.Observer.onNext onNext]], [[rx.lang.scala.Observer.onCompleted onCompleted]], and [[rx.lang.scala.Observer.onError onError]] methods of
    * its [[rx.lang.scala.Observer]]s; it invokes `onCompleted` or `onError` only once; and it never invokes `onNext` after invoking either `onCompleted` or `onError`.
-   * `synchronize` enforces this, and the Observable it returns invokes `onNext` and `onCompleted` or `onError` synchronously.
+   * [[Observable.serialize serialize]] enforces this, and the Observable it returns invokes `onNext` and `onCompleted` or `onError` synchronously.
    *
    * @return an Observable that is a chronologically well-behaved version of the source
    *         Observable, and that synchronously notifies its [[rx.lang.scala.Observer]]s
    */
-  def synchronize: Observable[T] = {
-    toScalaObservable[T](asJavaObservable.synchronize)
+  def serialize: Observable[T] = {
+    toScalaObservable[T](asJavaObservable.serialize)
   }
 
   /**
@@ -304,7 +333,7 @@ trait Observable[+T]
    * is the minumum of the number of `onNext` invocations of `this` and `that`. 
    */
   def zip[U](that: Observable[U]): Observable[(T, U)] = {
-    zip(that, (t: T, u: U) => (t, u))
+    zipWith(that, (t: T, u: U) => (t, u))
   }
 
   /**
@@ -312,10 +341,8 @@ trait Observable[+T]
    * corresponding elements using the selector function.
    * The number of `onNext` invocations of the resulting `Observable[(T, U)]`
    * is the minumum of the number of `onNext` invocations of `this` and `that`.
-   *
-   * Note that this function is private because Scala collections don't have such a function.
    */
-  private def zip[U, R](that: Observable[U], selector: (T,U) => R): Observable[R] = {
+  def zipWith[U, R](that: Observable[U], selector: (T,U) => R): Observable[R] = {
     toScalaObservable[R](rx.Observable.zip[T, U, R](this.asJavaObservable, that.asJavaObservable, selector))
   }
 
@@ -326,8 +353,7 @@ trait Observable[+T]
    *         their index. Indices start at 0.
    */
   def zipWithIndex: Observable[(T, Int)] = {
-    var n = 0;
-    this.map(x => { val result = (x,n); n += 1; result })
+    zip((0 until Int.MaxValue).toObservable)
   }
 
   /**
@@ -345,18 +371,17 @@ trait Observable[+T]
    *         An [[rx.lang.scala.Observable]] which produces connected non-overlapping buffers, which are emitted
    *         when the current [[rx.lang.scala.Observable]] created with the function argument produces an object.
    */
-  def buffer[Closing](closings: () => Observable[_ <: Closing]) : Observable[Seq[T]] = {
-    val f: Func0[_ <: rx.Observable[_ <: Closing]] = closings().asJavaObservable
-    val jObs: rx.Observable[_ <: java.util.List[_]] = asJavaObservable.buffer[Closing](f)
+  def buffer(closings: () => Observable[Any]) : Observable[Seq[T]] = {
+    val f: Func0[_ <: rx.Observable[_ <: Any]] = closings().asJavaObservable
+    val jObs: rx.Observable[_ <: java.util.List[_]] = asJavaObservable.buffer[Any](f)
     Observable.jObsOfListToScObsOfSeq(jObs.asInstanceOf[rx.Observable[_ <: java.util.List[T]]])
   }
   /**
    * Creates an Observable which produces buffers of collected values.
    *
    * This Observable produces buffers. Buffers are created when the specified `openings`
-   * Observable produces an object. Additionally the function argument
-   * is used to create an Observable which produces [[rx.lang.scala.util.Closing]] objects. When this
-   * Observable produces such an object, the associated buffer is emitted.
+   * Observable produces an object. That object is used to construct an Observable to emit buffers, feeding it into `closings` function.
+   * Buffers are emitted when the created Observable produces an object.
    *
    * @param openings
    *            The [[rx.lang.scala.Observable]] which, when it produces an object, will cause
@@ -541,6 +566,43 @@ trait Observable[+T]
   }
 
   /**
+   * Returns an Observable that emits non-overlapping buffered items from the source Observable each time the
+   * specified boundary Observable emits an item.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/buffer8.png">
+   * <p>
+   * Completion of either the source or the boundary Observable causes the returned Observable to emit the
+   * latest buffer and complete.
+   *
+   * @param boundary the boundary Observable
+   * @return an Observable that emits buffered items from the source Observable when the boundary Observable
+   *         emits an item
+   */
+  def buffer(boundary: Observable[Any]): Observable[Seq[T]] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[T]]
+    toScalaObservable(thisJava.buffer(boundary.asJavaObservable)).map(_.asScala)
+  }
+
+  /**
+   * Returns an Observable that emits non-overlapping buffered items from the source Observable each time the
+   * specified boundary Observable emits an item.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/buffer8.png">
+   * <p>
+   * Completion of either the source or the boundary Observable causes the returned Observable to emit the
+   * latest buffer and complete.
+   *
+   * @param boundary the boundary Observable
+   * @param initialCapacity the initial capacity of each buffer chunk
+   * @return an Observable that emits buffered items from the source Observable when the boundary Observable
+   *         emits an item
+   */
+  def buffer(boundary: Observable[Any], initialCapacity: Int): Observable[Seq[T]] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[T]]
+    toScalaObservable(thisJava.buffer(boundary.asJavaObservable, initialCapacity)).map(_.asScala)
+  }
+
+  /**
    * Creates an Observable which produces windows of collected values. This Observable produces connected
    * non-overlapping windows. The current window is emitted and replaced with a new window when the
    * Observable produced by the specified function produces an object. 
@@ -566,10 +628,9 @@ trait Observable[+T]
   }
 
   /**
-   * Creates an Observable which produces windows of collected values. This Observable produces windows.
-   * Chunks are created when the specified `openings` Observable produces an object.
-   * Additionally the `closings` argument is used to create an Observable which produces [[rx.lang.scala.util.Closing]] objects. 
-   * When this Observable produces such an object, the associated window is emitted.
+   * Creates an Observable which produces windows of collected values. Chunks are created when the specified `openings`
+   * Observable produces an object. That object is used to construct an Observable to emit windows, feeding it into `closings` function.
+   * Windows are emitted when the created Observable produces an object.
    *
    * @param openings
    *            The [[rx.lang.scala.Observable]] which when it produces an object, will cause
@@ -1032,9 +1093,281 @@ trait Observable[+T]
    * @return a pair of a start function and an [[rx.lang.scala.Observable]] such that when the start function
    *         is called, the Observable starts to emit items to its [[rx.lang.scala.Observer]]s
    */
-  def replay: (() => Subscription, Observable[T]) = {
-    val javaCO = asJavaObservable.replay()
-    (() => javaCO.connect(), toScalaObservable[T](javaCO))
+  def replay: ConnectableObservable[T] = {
+    new ConnectableObservable[T](asJavaObservable.replay())
+  }
+
+  /**
+   * Returns an Observable that emits items that are the results of invoking a specified selector on the items
+   * emitted by a `ConnectableObservable` that shares a single subscription to the source Observable.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.f.png">
+   *
+   * @param selector the selector function, which can use the multicasted sequence as many times as needed, without
+   *                 causing multiple subscriptions to the Observable
+   * @return an Observable that emits items that are the results of invoking the selector on a `ConnectableObservable`
+   *         that shares a single subscription to the source Observable
+   */
+  def replay[U >: T, R](selector: Observable[U] => Observable[R]): Observable[R] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[U]]
+    val fJava: Func1[rx.Observable[U], rx.Observable[R]] =
+      (jo: rx.Observable[U]) => selector(toScalaObservable[U](jo)).asJavaObservable.asInstanceOf[rx.Observable[R]]
+    toScalaObservable[R](thisJava.replay(fJava))
+  }
+
+  /**
+   * Returns an Observable that emits items that are the results of invoking a specified selector on items
+   * emitted by a `ConnectableObservable` that shares a single subscription to the source Observable,
+   * replaying `bufferSize` notifications.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.fn.png">
+   *
+   * @param selector the selector function, which can use the multicasted sequence as many times as needed, without
+   *                 causing multiple subscriptions to the Observable
+   * @param bufferSize  the buffer size that limits the number of items the connectable observable can replay
+   * @return an Observable that emits items that are the results of invoking the selector on items emitted by
+   *         a `ConnectableObservable` that shares a single subscription to the source Observable  replaying
+   *         no more than `bufferSize` items
+   */
+  def replay[U >: T, R](selector: Observable[U] => Observable[R], bufferSize: Int): Observable[R] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[U]]
+    val fJava: Func1[rx.Observable[U], rx.Observable[R]] =
+      (jo: rx.Observable[U]) => selector(toScalaObservable[U](jo)).asJavaObservable.asInstanceOf[rx.Observable[R]]
+    toScalaObservable[R](thisJava.replay(fJava, bufferSize))
+  }
+
+  /**
+   * Returns an Observable that emits items that are the results of invoking a specified selector on items
+   * emitted by a `ConnectableObservable` that shares a single subscription to the source Observable,
+   * replaying no more than `bufferSize` items that were emitted within a specified time window.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.fnt.png">
+   *
+   * @param selector  a selector function, which can use the multicasted sequence as many times as needed, without
+   *                  causing multiple subscriptions to the Observable
+   * @param bufferSize the buffer size that limits the number of items the connectable observable can replay
+   * @param time the duration of the window in which the replayed items must have been emitted
+   * @return an Observable that emits items that are the results of invoking the selector on items emitted by
+   *         a `ConnectableObservable` that shares a single subscription to the source Observable, and
+   *         replays no more than `bufferSize` items that were emitted within the window defined by `time`
+   */
+  def replay[U >: T, R](selector: Observable[U] => Observable[R], bufferSize: Int, time: Duration): Observable[R] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[U]]
+    val fJava: Func1[rx.Observable[U], rx.Observable[R]] =
+      (jo: rx.Observable[U]) => selector(toScalaObservable[U](jo)).asJavaObservable.asInstanceOf[rx.Observable[R]]
+    toScalaObservable[R](thisJava.replay(fJava, bufferSize, time.length, time.unit))
+  }
+
+  /**
+   * Returns an Observable that emits items that are the results of invoking a specified selector on items
+   * emitted by a `ConnectableObservable` that shares a single subscription to the source Observable,
+   * replaying no more than `bufferSize` items that were emitted within a specified time window.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.fnts.png">
+   *
+   * @param selector  a selector function, which can use the multicasted sequence as many times as needed, without
+   *                  causing multiple subscriptions to the Observable
+   * @param bufferSize the buffer size that limits the number of items the connectable observable can replay
+   * @param time  the duration of the window in which the replayed items must have been emitted
+   * @param scheduler  the Scheduler that is the time source for the window
+   * @return an Observable that emits items that are the results of invoking the selector on items emitted by
+   *         a `ConnectableObservable` that shares a single subscription to the source Observable, and
+   *         replays no more than `bufferSize` items that were emitted within the window defined by `time`
+   * @throws IllegalArgumentException if `bufferSize` is less than zero
+   */
+  def replay[U >: T, R](selector: Observable[U] => Observable[R], bufferSize: Int, time: Duration, scheduler: Scheduler): Observable[R] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[U]]
+    val fJava: Func1[rx.Observable[U], rx.Observable[R]] =
+      (jo: rx.Observable[U]) => selector(toScalaObservable[U](jo)).asJavaObservable.asInstanceOf[rx.Observable[R]]
+    toScalaObservable[R](thisJava.replay(fJava, bufferSize, time.length, time.unit, scheduler))
+  }
+
+  /**
+   * Returns an Observable that emits items that are the results of invoking a specified selector on items
+   * emitted by a `ConnectableObservable` that shares a single subscription to the source Observable,
+   * replaying a maximum of `bufferSize` items.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.fns.png">
+   *
+   * @param selector  a selector function, which can use the multicasted sequence as many times as needed, without
+   *                  causing multiple subscriptions to the Observable
+   * @param bufferSize  the buffer size that limits the number of items the connectable observable can replay
+   * @param scheduler  the Scheduler on which the replay is observed
+   * @return an Observable that emits items that are the results of invoking the selector on items emitted by
+   *         a `ConnectableObservable` that shares a single subscription to the source Observable,
+   *         replaying no more than `bufferSize` notifications
+   */
+  def replay[U >: T, R](selector: Observable[U] => Observable[R], bufferSize: Int, scheduler: Scheduler): Observable[R] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[U]]
+    val fJava: Func1[rx.Observable[U], rx.Observable[R]] =
+      (jo: rx.Observable[U]) => selector(toScalaObservable[U](jo)).asJavaObservable.asInstanceOf[rx.Observable[R]]
+    toScalaObservable[R](thisJava.replay(fJava, bufferSize, scheduler))
+  }
+
+  /**
+   * Returns an Observable that emits items that are the results of invoking a specified selector on items
+   * emitted by a `ConnectableObservable` that shares a single subscription to the source Observable,
+   * replaying all items that were emitted within a specified time window.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.ft.png">
+   *
+   * @param selector   a selector function, which can use the multicasted sequence as many times as needed, without
+   *                   causing multiple subscriptions to the Observable
+   * @param time  the duration of the window in which the replayed items must have been emitted
+   * @return an Observable that emits items that are the results of invoking the selector on items emitted by
+   *         a `ConnectableObservable` that shares a single subscription to the source Observable,
+   *         replaying all items that were emitted within the window defined by `time`
+   */
+  def replay[U >: T, R](selector: Observable[U] => Observable[R], time: Duration, scheduler: Scheduler): Observable[R] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[U]]
+    val fJava: Func1[rx.Observable[U], rx.Observable[R]] =
+      (jo: rx.Observable[U]) => selector(toScalaObservable[U](jo)).asJavaObservable.asInstanceOf[rx.Observable[R]]
+    toScalaObservable[R](thisJava.replay(fJava, time.length, time.unit, scheduler))
+  }
+
+  /**
+   * Returns an Observable that emits items that are the results of invoking a specified selector on items
+   * emitted by a `ConnectableObservable` that shares a single subscription to the source Observable.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.fs.png">
+   *
+   * @param selector  a selector function, which can use the multicasted sequence as many times as needed, without
+   *                  causing multiple subscriptions to the Observable
+   * @param scheduler    the Scheduler where the replay is observed
+   * @return an Observable that emits items that are the results of invoking the selector on items emitted by
+   *         a `ConnectableObservable` that shares a single subscription to the source Observable,
+   *         replaying all items
+   */
+  def replay[U >: T, R](selector: Observable[U] => Observable[R], scheduler: Scheduler): Observable[R] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[U]]
+    val fJava: Func1[rx.Observable[U], rx.Observable[R]] =
+      (jo: rx.Observable[U]) => selector(toScalaObservable[U](jo)).asJavaObservable.asInstanceOf[rx.Observable[R]]
+    toScalaObservable[R](thisJava.replay(fJava, scheduler))
+  }
+
+  /**
+   * Returns a `ConnectableObservable` that shares a single subscription to the source Observable and
+   * replays at most `bufferSize` items that were emitted during a specified time window.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.nt.png">
+   *
+   * @param bufferSize the buffer size that limits the number of items that can be replayed
+   * @param time the duration of the window in which the replayed items must have been emitted
+   * @return a `ConnectableObservable` that shares a single subscription to the source Observable and
+   *         replays at most `bufferSize` items that were emitted during the window defined by `time`
+   */
+  def replay(bufferSize: Int, time: Duration): ConnectableObservable[T] = {
+    new ConnectableObservable[T](asJavaObservable.replay(bufferSize, time.length, time.unit))
+  }
+
+  /**
+   * Returns a `ConnectableObservable` that shares a single subscription to the source Observable and
+   * that replays a maximum of `bufferSize` items that are emitted within a specified time window.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.nts.png">
+   *
+   * @param bufferSize the buffer size that limits the number of items that can be replayed
+   * @param time the duration of the window in which the replayed items must have been emitted
+   * @param scheduler the scheduler that is used as a time source for the window
+   * @return a `ConnectableObservable` that shares a single subscription to the source Observable and
+   *         replays at most `bufferSize` items that were emitted during the window defined by `time``
+   * @throws IllegalArgumentException if `bufferSize` is less than zero
+   */
+  def replay(bufferSize: Int, time: Duration, scheduler: Scheduler): ConnectableObservable[T] = {
+    new ConnectableObservable[T](asJavaObservable.replay(bufferSize, time.length, time.unit, scheduler))
+  }
+
+  /**
+   * Returns an Observable that emits items that are the results of invoking a specified selector on items
+   * emitted by a `ConnectableObservable` that shares a single subscription to the source Observable,
+   * replaying all items that were emitted within a specified time window.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.ft.png">
+   *
+   * @param selector  a selector function, which can use the multicasted sequence as many times as needed, without
+   *                  causing multiple subscriptions to the Observable
+   * @param time the duration of the window in which the replayed items must have been emitted
+   * @return an Observable that emits items that are the results of invoking the selector on items emitted by
+   *         a `ConnectableObservable` that shares a single subscription to the source Observable,
+   *         replaying all items that were emitted within the window defined by `time``
+   */
+  def replay[U >: T, R](selector: Observable[U] => Observable[R], time: Duration): Observable[R] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[U]]
+    val fJava: Func1[rx.Observable[U], rx.Observable[R]] =
+      (jo: rx.Observable[U]) => selector(toScalaObservable[U](jo)).asJavaObservable.asInstanceOf[rx.Observable[R]]
+    toScalaObservable[R](thisJava.replay(fJava, time.length, time.unit))
+  }
+
+  /**
+   * Returns a `ConnectableObservable` that shares a single subscription to the source Observable that
+   * replays at most `bufferSize` items emitted by that Observable.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.n.png">
+   *
+   * @param bufferSize the buffer size that limits the number of items that can be replayed
+   * @return a `ConnectableObservable` that shares a single subscription to the source Observable and
+   *         replays at most `bufferSize` items emitted by that Observable
+   */
+  def replay(bufferSize: Int): ConnectableObservable[T] = {
+    new ConnectableObservable[T](asJavaObservable.replay(bufferSize))
+  }
+
+  /**
+   * Returns a `ConnectableObservable` that shares a single subscription to the source Observable and
+   * replays at most `bufferSize` items emitted by that Observable.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.ns.png">
+   *
+   * @param bufferSize the buffer size that limits the number of items that can be replayed
+   * @param scheduler the scheduler on which the Observers will observe the emitted items
+   * @return a `ConnectableObservable` that shares a single subscription to the source Observable and
+   *         replays at most `bufferSize` items that were emitted by the Observable
+   */
+  def replay(bufferSize: Int, scheduler: Scheduler): ConnectableObservable[T] = {
+    new ConnectableObservable[T](asJavaObservable.replay(bufferSize, scheduler))
+  }
+
+  /**
+   * Returns a `ConnectableObservable` that shares a single subscription to the source Observable and
+   * replays all items emitted by that Observable within a specified time window.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.t.png">
+   *
+   * @param time  the duration of the window in which the replayed items must have been emitted
+   * @return a `ConnectableObservable` that shares a single subscription to the source Observable and
+   *         replays the items that were emitted during the window defined by `time`
+   */
+  def replay(time: Duration): ConnectableObservable[T] = {
+    new ConnectableObservable[T](asJavaObservable.replay(time.length, time.unit))
+  }
+
+  /**
+   * Returns a `ConnectableObservable` that shares a single subscription to the source Observable and
+   * replays all items emitted by that Observable within a specified time window.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.ts.png">
+   *
+   * @param time the duration of the window in which the replayed items must have been emitted
+   * @param scheduler the Scheduler that is the time source for the window
+   * @return a `ConnectableObservable` that shares a single subscription to the source Observable and
+   *         replays the items that were emitted during the window defined by `time`
+   */
+  def replay(time: Duration, scheduler: Scheduler): ConnectableObservable[T] = {
+    new ConnectableObservable[T](asJavaObservable.replay(time.length, time.unit, scheduler))
+  }
+
+  /**
+   * Returns a `ConnectableObservable` that shares a single subscription to the source Observable that
+   * will replay all of its items and notifications to any future `Observer` on the given `Scheduler`.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/replay.s.png">
+   *
+   * @param scheduler the Scheduler on which the Observers will observe the emitted items
+   * @return a `ConnectableObservable` that shares a single subscription to the source Observable that
+   *         will replay all of its items and notifications to any future `bserver` on the given `Scheduler`
+   */
+  def replay(scheduler: Scheduler): ConnectableObservable[T] = {
+    new ConnectableObservable[T](asJavaObservable.replay(scheduler))
   }
 
   /**
@@ -1062,6 +1395,22 @@ trait Observable[+T]
   }
 
   /**
+   * Returns an Observable that emits a Boolean that indicates whether the source Observable emitted a
+   * specified item.
+   *
+   * Note: this method uses `==` to compare elements. It's a bit different from RxJava which uses `Object.equals`.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/contains.png">
+   *
+   *@param elem the item to search for in the emissions from the source Observable
+   * @return an Observable that emits `true` if the specified item is emitted by the source Observable,
+   *         or `false` if the source Observable completes without emitting that item
+   */
+  def contains[U >: T](elem: U): Observable[Boolean] = {
+    exists(_ == elem)
+  }
+
+  /**
    * Returns a a pair of a start function and an [[rx.lang.scala.Observable]], which waits until the start function is called before it begins emitting
    * items to those [[rx.lang.scala.Observer]]s that have subscribed to it.
    *
@@ -1071,6 +1420,60 @@ trait Observable[+T]
    */
   def publish: ConnectableObservable[T] = {
     new ConnectableObservable[T](asJavaObservable.publish())
+  }
+
+
+  /**
+   * Returns an Observable that emits `initialValue` followed by the items emitted by a `ConnectableObservable` that shares a single subscription to the source Observable.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/publishConnect.i.png">
+   *
+   * @param initialValue the initial value to be emitted by the resulting Observable
+   * @return a `ConnectableObservable` that shares a single subscription to the underlying Observable and starts with `initialValue`
+   */
+  def publish[U >: T](initialValue: U): ConnectableObservable[U] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[U]]
+    new ConnectableObservable[U](thisJava.publish(initialValue))
+  }
+
+  /**
+   * Returns an Observable that emits the results of invoking a specified selector on items emitted by a `ConnectableObservable`
+   * that shares a single subscription to the underlying sequence.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/publishConnect.f.png">
+   *
+   * @param selector a function that can use the multicasted source sequence as many times as needed, without
+   *                 causing multiple subscriptions to the source sequence. Subscribers to the given source will
+   *                 receive all notifications of the source from the time of the subscription forward.
+   * @return an Observable that emits the results of invoking the selector on the items emitted by a `ConnectableObservable`
+   *         that shares a single subscription to the underlying sequence
+   */
+  def publish[U >: T, R](selector: Observable[U] => Observable[R]): Observable[R] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[U]]
+    val fJava: Func1[rx.Observable[U], rx.Observable[R]] =
+      (jo: rx.Observable[U]) => selector(toScalaObservable[U](jo)).asJavaObservable.asInstanceOf[rx.Observable[R]]
+    toScalaObservable[R](thisJava.publish(fJava))
+  }
+
+  /**
+   * Returns an Observable that emits `initialValue` followed by the results of invoking a specified
+   * selector on items emitted by a `ConnectableObservable` that shares a single subscription to the
+   * source Observable.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/publishConnect.if.png">
+   *
+   * @param selector a function that can use the multicasted source sequence as many times as needed, without
+   *                 causing multiple subscriptions to the source Observable. Subscribers to the source will
+   *                 receive all notifications of the source from the time of the subscription forward
+   * @param initialValue  the initial value of the underlying `BehaviorSubject`
+   * @return an Observable that emits `initialValue` followed by the results of invoking the selector
+   *         on a `ConnectableObservable` that shares a single subscription to the underlying Observable
+   */
+  def publish[U >: T, R](selector: Observable[U] => Observable[R], initialValue: U): Observable[R] = {
+    val thisJava = this.asJavaObservable.asInstanceOf[rx.Observable[U]]
+    val fJava: Func1[rx.Observable[U], rx.Observable[R]] =
+      (jo: rx.Observable[U]) => selector(toScalaObservable[U](jo)).asJavaObservable.asInstanceOf[rx.Observable[R]]
+    toScalaObservable[R](thisJava.publish(fJava, initialValue))
   }
 
   // TODO add Scala-like aggregate function
@@ -1130,6 +1533,21 @@ trait Observable[+T]
    */
   def sample(duration: Duration, scheduler: Scheduler): Observable[T] = {
     toScalaObservable[T](asJavaObservable.sample(duration.length, duration.unit, scheduler))
+  }
+
+  /**
+   * Return an Observable that emits the results of sampling the items emitted by the source Observable
+   * whenever the specified sampler Observable emits an item or completes.
+   *
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/sample.o.png">
+   *
+   * @param sampler
+   *            the Observable to use for sampling the source Observable
+   * @return an Observable that emits the results of sampling the items emitted by this Observable whenever
+   *         the sampler Observable emits an item or completes
+   */
+  def sample(sampler: Observable[Any]): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.sample(sampler))
   }
 
   /**
@@ -1217,6 +1635,35 @@ trait Observable[+T]
   }
 
   /**
+   * Returns an Observable that drops values emitted by the source Observable before a specified time window
+   * elapses.
+   *
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/skip.t.png">
+   *
+   * @param time the length of the time window to drop
+   * @return an Observable that drops values emitted by the source Observable before the time window defined
+   *         by `time` elapses and emits the remainder
+   */
+  def drop(time: Duration): Observable[T] = {
+    toScalaObservable(asJavaObservable.skip(time.length, time.unit))
+  }
+
+  /**
+   * Returns an Observable that drops values emitted by the source Observable before a specified time window
+   * elapses.
+   *
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/skip.t.png">
+   *
+   * @param time the length of the time window to drop
+   * @param scheduler the `Scheduler` on which the timed wait happens
+   * @return an Observable that drops values emitted by the source Observable before the time window defined
+   *         by `time` elapses and emits the remainder
+   */
+  def drop(time: Duration, scheduler: Scheduler): Observable[T] = {
+    toScalaObservable(asJavaObservable.skip(time.length, time.unit, scheduler))
+  }
+
+  /**
    * Returns an Observable that bypasses all items from the source Observable as long as the specified
    * condition holds true. Emits all further source items as soon as the condition becomes false.
    *
@@ -1229,6 +1676,74 @@ trait Observable[+T]
    */
   def dropWhile(predicate: T => Boolean): Observable[T] = {
     toScalaObservable(asJavaObservable.skipWhile(predicate))
+  }
+
+  /**
+   * Returns an Observable that drops a specified number of items from the end of the sequence emitted by the
+   * source Observable.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/skipLast.png">
+   * <p>
+   * This Observer accumulates a queue long enough to store the first `n` items. As more items are
+   * received, items are taken from the front of the queue and emitted by the returned Observable. This causes
+   * such items to be delayed.
+   *
+   * @param n number of items to drop from the end of the source sequence
+   * @return an Observable that emits the items emitted by the source Observable except for the dropped ones
+   *         at the end
+   * @throws IndexOutOfBoundsException if `n` is less than zero
+   */
+  def dropRight(n: Int): Observable[T] = {
+    toScalaObservable(asJavaObservable.skipLast(n))
+  }
+
+  /**
+   * Returns an Observable that drops items emitted by the source Observable during a specified time window
+   * before the source completes.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/skipLast.t.png">
+   *
+   * Note: this action will cache the latest items arriving in the specified time window.
+   *
+   * @param time the length of the time window
+   * @return an Observable that drops those items emitted by the source Observable in a time window before the
+   *         source completes defined by `time`
+   */
+  def dropRight(time: Duration): Observable[T] = {
+    toScalaObservable(asJavaObservable.skipLast(time.length, time.unit))
+  }
+
+  /**
+   * Returns an Observable that drops items emitted by the source Observable during a specified time window
+   * (defined on a specified scheduler) before the source completes.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/skipLast.ts.png">
+   *
+   * Note: this action will cache the latest items arriving in the specified time window.
+   *
+   * @param time the length of the time window
+   * @param scheduler the scheduler used as the time source
+   * @return an Observable that drops those items emitted by the source Observable in a time window before the
+   *         source completes defined by `time` and `scheduler`
+   */
+  def dropRight(time: Duration, scheduler: Scheduler): Observable[T] = {
+    toScalaObservable(asJavaObservable.skipLast(time.length, time.unit, scheduler))
+  }
+
+  /**
+   * Returns an Observable that skips items emitted by the source Observable until a second Observable emits an item.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/skipUntil.png">
+   *
+   * @param other the second Observable that has to emit an item before the source Observable's elements begin
+   *              to be mirrored by the resulting Observable
+   * @return an Observable that skips items from the source Observable until the second Observable emits an
+   *         item, then emits the remaining items
+   * @see <a href="https://github.com/Netflix/RxJava/wiki/Filtering-Observables#wiki-skipuntil">RxJava Wiki: skipUntil()</a>
+   * @see <a href="http://msdn.microsoft.com/en-us/library/hh229358.aspx">MSDN: Observable.SkipUntil</a>
+   */
+  def dropUntil[E](other: Observable[E]): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.skipUntil(other))
   }
 
   /**
@@ -1249,6 +1764,33 @@ trait Observable[+T]
    */
   def take(n: Int): Observable[T] = {
     toScalaObservable[T](asJavaObservable.take(n))
+  }
+
+  /**
+   * Returns an Observable that emits those items emitted by source Observable before a specified time runs out.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/take.t.png">
+   *
+   * @param time the length of the time window
+   * @return an Observable that emits those items emitted by the source Observable before the time runs out
+   */
+  def take(time: Duration): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.take(time.length, time.unit))
+  }
+
+  /**
+   * Returns an Observable that emits those items emitted by source Observable before a specified time (on
+   * specified Scheduler) runs out
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/take.ts.png">
+   *
+   * @param time the length of the time window
+   * @param scheduler the Scheduler used for time source
+   * @return an Observable that emits those items emitted by the source Observable before the time runs out,
+   *         according to the specified Scheduler
+   */
+  def take(time: Duration, scheduler: Scheduler) {
+    toScalaObservable[T](asJavaObservable.take(time.length, time.unit, scheduler.asJavaScheduler))
   }
 
   /**
@@ -1281,6 +1823,72 @@ trait Observable[+T]
    */
   def takeRight(count: Int): Observable[T] = {
     toScalaObservable[T](asJavaObservable.takeLast(count))
+  }
+
+  /**
+   * Return an Observable that emits the items from the source Observable that were emitted in a specified
+   * window of `time` before the Observable completed.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/takeLast.t.png">
+   *
+   * @param time the length of the time window
+   * @return an Observable that emits the items from the source Observable that were emitted in the window of
+   *         time before the Observable completed specified by `time`
+   */
+  def takeRight(time: Duration): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.takeLast(time.length, time.unit))
+  }
+
+  /**
+   * Return an Observable that emits the items from the source Observable that were emitted in a specified
+   * window of `time` before the Observable completed, where the timing information is provided by a specified
+   * Scheduler.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/takeLast.ts.png">
+   *
+   * @param time the length of the time window
+   * @param scheduler the Scheduler that provides the timestamps for the Observed items
+   * @return an Observable that emits the items from the source Observable that were emitted in the window of
+   *         time before the Observable completed specified by `time`, where the timing information is
+   *         provided by `scheduler`
+   */
+  def takeRight(time: Duration, scheduler: Scheduler): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.takeLast(time.length, time.unit, scheduler.asJavaScheduler))
+  }
+
+  /**
+   * Return an Observable that emits at most a specified number of items from the source Observable that were
+   * emitted in a specified window of time before the Observable completed.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/takeLast.tn.png">
+   *
+   * @param count the maximum number of items to emit
+   * @param time the length of the time window
+   * @return an Observable that emits at most `count` items from the source Observable that were emitted
+   *         in a specified window of time before the Observable completed
+   * @throws IllegalArgumentException if `count` is less than zero
+   */
+  def takeRight(count: Int, time: Duration): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.takeLast(count, time.length, time.unit))
+  }
+
+  /**
+   * Return an Observable that emits at most a specified number of items from the source Observable that were
+   * emitted in a specified window of `time` before the Observable completed, where the timing information is
+   * provided by a given Scheduler.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/takeLast.tns.png">
+   *
+   * @param count the maximum number of items to emit
+   * @param time the length of the time window
+   * @param scheduler the Scheduler that provides the timestamps for the observed items
+   * @return an Observable that emits at most `count` items from the source Observable that were emitted
+   *         in a specified window of time before the Observable completed, where the timing information is
+   *         provided by the given `scheduler`
+   * @throws IllegalArgumentException if `count` is less than zero
+   */
+  def takeRight(count: Int, time: Duration, scheduler: Scheduler): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.takeLast(count, time.length, time.unit, scheduler.asJavaScheduler))
   }
 
   /**
@@ -1934,36 +2542,85 @@ trait Observable[+T]
   def headOrElse[U >: T](default: => U): Observable[U] = firstOrElse(default)
 
   /**
-   * Returns an Observable that emits only the very first item emitted by the source Observable.
-   * This is just a shorthand for `take(1)`.
-   *
+   * Returns an Observable that emits only the very first item emitted by the source Observable, or raises an
+   * `NoSuchElementException` if the source Observable is empty.
+   * <p>
    * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/first.png">
-   *
-   * @return an Observable that emits only the very first item from the source, or none if the
-   *         source Observable completes without emitting a single item.
+   * 
+   * @return an Observable that emits only the very first item emitted by the source Observable, or raises an
+   *         `NoSuchElementException` if the source Observable is empty
+   * @see <a href="https://github.com/Netflix/RxJava/wiki/Filtering-Observables#wiki-first">RxJava Wiki: first()</a>
+   * @see "MSDN: Observable.firstAsync()"
    */
-  def first: Observable[T] = take(1)
-
-  /*
-  
-  TODO once https://github.com/Netflix/RxJava/issues/417 is fixed, we can add head and tail methods
-  
-  /**
-   * emits NoSuchElementException("head of empty Observable") if empty
-   */
-  def head: Observable[T] = {
-    this.take(1).fold[Option[T]](None)((v: Option[T], e: T) => Some(e)).map({
-      case Some(element) => element
-      case None => throw new NoSuchElementException("head of empty Observable")
-    })
+  def first: Observable[T] = {
+    toScalaObservable[T](asJavaObservable.first)
   }
-  
+
   /**
-   * emits an UnsupportedOperationException("tail of empty list") if empty
+   * Returns an Observable that emits only the very first item emitted by the source Observable, or raises an
+   * `NoSuchElementException` if the source Observable is empty.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/first.png">
+   * 
+   * @return an Observable that emits only the very first item emitted by the source Observable, or raises an
+   *         `NoSuchElementException` if the source Observable is empty
+   * @see <a href="https://github.com/Netflix/RxJava/wiki/Filtering-Observables#wiki-first">RxJava Wiki: first()</a>
+   * @see "MSDN: Observable.firstAsync()"
+   * @see [[Observable.first]]
    */
-  def tail: Observable[T] = ???
-  
-  */
+  def head: Observable[T] = first
+
+  /**
+   * Returns an Observable that emits all items except the first one, or raises an `UnsupportedOperationException`
+   * if the source Observable is empty.
+   *
+   * @return an Observable that emits all items except the first one, or raises an `UnsupportedOperationException`
+   *         if the source Observable is empty.
+   */
+  def tail: Observable[T] = {
+    lift {
+      (subscriber: Subscriber[T]) => {
+        var isFirst = true
+        Subscriber[T](
+          subscriber,
+          (v: T) => if(isFirst) isFirst = false else subscriber.onNext(v),
+          e => subscriber.onError(e),
+          () => if(isFirst) subscriber.onError(new UnsupportedOperationException("tail of empty Observable")) else subscriber.onCompleted
+        )
+      }
+    }
+  }
+
+  /**
+   * Returns an Observable that emits the last item emitted by the source Observable or notifies observers of
+   * an `NoSuchElementException` if the source Observable is empty.
+   * 
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/last.png">
+   * 
+   * @return an Observable that emits the last item from the source Observable or notifies observers of an
+   *         error
+   * @see <a href="https://github.com/Netflix/RxJava/wiki/Filtering-Observable-Operators#wiki-last">RxJava Wiki: last()</a>
+   * @see "MSDN: Observable.lastAsync()"
+   */
+  def last: Observable[T] = {
+    toScalaObservable[T](asJavaObservable.last)
+  }
+
+  /**
+   * If the source Observable completes after emitting a single item, return an Observable that emits that
+   * item. If the source Observable emits more than one item or no items, throw an `NoSuchElementException`.
+   * 
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/single.png">
+   * 
+   * @return an Observable that emits the single item emitted by the source Observable
+   * @throws NoSuchElementException
+   *             if the source emits more than one item or no items
+   * @see <a href="https://github.com/Netflix/RxJava/wiki/Observable-Utility-Operators#wiki-single-and-singleordefault">RxJava Wiki: single()</a>
+   * @see "MSDN: Observable.singleAsync()"
+   */
+  def single: Observable[T] = {
+    toScalaObservable[T](asJavaObservable.single)
+  }
 
   /**
    * Returns an Observable that forwards all sequentially distinct items emitted from the source Observable.
@@ -2077,6 +2734,68 @@ trait Observable[+T]
   }
 
   /**
+   * Returns an Observable that repeats the sequence of items emitted by the source Observable indefinitely.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/repeat.o.png">
+   *
+   * @return an Observable that emits the items emitted by the source Observable repeatedly and in sequence
+   * @see <a href="https://github.com/Netflix/RxJava/wiki/Creating-Observables#wiki-repeat">RxJava Wiki: repeat()</a>
+   * @see <a href="http://msdn.microsoft.com/en-us/library/hh229428.aspx">MSDN: Observable.Repeat</a>
+   */
+  def repeat: Observable[T] = {
+    toScalaObservable[T](asJavaObservable.repeat())
+  }
+
+  /**
+   * Returns an Observable that repeats the sequence of items emitted by the source Observable indefinitely,
+   * on a particular Scheduler.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/repeat.os.png">
+   *
+   * @param scheduler the Scheduler to emit the items on
+   * @return an Observable that emits the items emitted by the source Observable repeatedly and in sequence
+   * @see <a href="https://github.com/Netflix/RxJava/wiki/Creating-Observables#wiki-repeat">RxJava Wiki: repeat()</a>
+   * @see <a href="http://msdn.microsoft.com/en-us/library/hh229428.aspx">MSDN: Observable.Repeat</a>
+   */
+  def repeat(scheduler: Scheduler): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.repeat(scheduler))
+  }
+
+  /**
+   * Returns an Observable that repeats the sequence of items emitted by the source Observable at most `count` times.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/repeat.on.png">
+   *
+   * @param count the number of times the source Observable items are repeated,
+   *              a count of 0 will yield an empty sequence
+   * @return an Observable that repeats the sequence of items emitted by the source Observable at most `count` times
+   * @throws IllegalArgumentException if `count` is less than zero
+   * @see <a href="https://github.com/Netflix/RxJava/wiki/Creating-Observables#wiki-repeat">RxJava Wiki: repeat()</a>
+   * @see <a href="http://msdn.microsoft.com/en-us/library/hh229428.aspx">MSDN: Observable.Repeat</a>
+   */
+  def repeat(count: Long): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.repeat(count))
+  }
+
+  /**
+   * Returns an Observable that repeats the sequence of items emitted by the source Observable
+   * at most `count` times, on a particular Scheduler.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/repeat.ons.png">
+   *
+   * @param count the number of times the source Observable items are repeated,
+   *              a count of 0 will yield an empty sequence
+   * @param scheduler the `Scheduler` to emit the items on
+   * @return an Observable that repeats the sequence of items emitted by the source Observable at most `count` times
+   *         on a particular Scheduler
+   * @see <a href="https://github.com/Netflix/RxJava/wiki/Creating-Observables#wiki-repeat">RxJava Wiki: repeat()</a>
+   * @see <a href="http://msdn.microsoft.com/en-us/library/hh229428.aspx">MSDN: Observable.Repeat</a>
+   */
+  def repeat(count: Long, scheduler: Scheduler): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.repeat(count, scheduler))
+  }
+
+  /**
    * Converts an Observable into a [[rx.lang.scala.observables.BlockingObservable]] (an Observable with blocking
    * operators).
    *
@@ -2088,8 +2807,7 @@ trait Observable[+T]
 
   /**
    * Perform work in parallel by sharding an `Observable[T]` on a 
-   * [[rx.lang.scala.concurrency.Schedulers.threadPoolForComputation computation]]
-   * [[rx.lang.scala.Scheduler]] and return an `Observable[R]` with the output.
+   * [[rx.lang.scala.schedulers.ComputationScheduler]] and return an `Observable[R]` with the output.
    *
    * @param f
    *            a function that applies Observable operators to `Observable[T]` in parallel and returns an `Observable[R]`
@@ -2221,6 +2939,319 @@ trait Observable[+T]
   def doOnEach(onNext: T => Unit, onError: Throwable => Unit, onCompleted: () => Unit): Observable[T] = {
     toScalaObservable[T](asJavaObservable.doOnEach(Observer(onNext, onError,onCompleted)))
   }
+
+  /**
+   * Modifies an Observable so that it invokes an action when it calls `onCompleted` or `onError`.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/doOnTerminate.png">
+   * <p>
+   * This differs from `finallyDo` in that this happens **before** `onCompleted/onError` are emitted.
+   *
+   * @param onTerminate the action to invoke when the source Observable calls `onCompleted` or `onError`
+   * @return the source Observable with the side-effecting behavior applied
+   * @see <a href="https://github.com/Netflix/RxJava/wiki/Observable-Utility-Operators#wiki-doonterminate">RxJava Wiki: doOnTerminate()</a>
+   * @see <a href="http://msdn.microsoft.com/en-us/library/hh229804.aspx">MSDN: Observable.Do</a>
+   */
+  def doOnTerminate(onTerminate: () => Unit): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.doOnTerminate(onTerminate))
+  }
+
+  /**
+   * Given two Observables, mirror the one that first emits an item.
+   *
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/amb.png">
+   *
+   * @param that
+   *            an Observable competing to react first
+   * @return an Observable that emits the same sequence of items as whichever of `this` or `that` first emitted an item.
+   */
+  def amb[U >: T](that: Observable[U]): Observable[U] = {
+    val thisJava: rx.Observable[_ <: U] = this.asJavaObservable
+    val thatJava: rx.Observable[_ <: U] = that.asJavaObservable
+    toScalaObservable[U](rx.Observable.amb(thisJava, thatJava))
+  }
+
+  /**
+   * Returns an Observable that emits the items emitted by the source Observable shifted forward in time by a
+   * specified delay. Error notifications from the source Observable are not delayed.
+   *
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/delay.png">
+   * 
+   * @param delay the delay to shift the source by
+   * @return the source Observable shifted in time by the specified delay
+   */
+  def delay(delay: Duration): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.delay(delay.length, delay.unit))
+  }
+
+  /**
+   * Returns an Observable that emits the items emitted by the source Observable shifted forward in time by a
+   * specified delay. Error notifications from the source Observable are not delayed.
+   *
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/delay.s.png">
+   * 
+   * @param delay the delay to shift the source by
+   * @param scheduler the Scheduler to use for delaying
+   * @return the source Observable shifted in time by the specified delay
+   */
+  def delay(delay: Duration, scheduler: Scheduler): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.delay(delay.length, delay.unit, scheduler))
+  }
+
+  /**
+   * Returns an Observable that delays the emissions of the source Observable via another Observable on a
+   * per-item basis.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/delay.o.png">
+   * <p>
+   * Note: the resulting Observable will immediately propagate any `onError` notification
+   * from the source Observable.
+   *
+   * @param itemDelay a function that returns an Observable for each item emitted by the source Observable, which is
+   *                  then used to delay the emission of that item by the resulting Observable until the Observable
+   *                  returned from `itemDelay` emits an item
+   * @return an Observable that delays the emissions of the source Observable via another Observable on a per-item basis
+   */
+  def delay(itemDelay: T => Observable[Any]): Observable[T] = {
+    val itemDelayJava = new Func1[T, rx.Observable[Any]] {
+      override def call(t: T): rx.Observable[Any] =
+        itemDelay(t).asJavaObservable.asInstanceOf[rx.Observable[Any]]
+    }
+    toScalaObservable[T](asJavaObservable.delay[Any](itemDelayJava))
+  }
+
+  /**
+   * Returns an Observable that delays the subscription to and emissions from the souce Observable via another
+   * Observable on a per-item basis.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/delay.oo.png">
+   * <p>
+   * Note: the resulting Observable will immediately propagate any `onError` notification
+   * from the source Observable.
+   *
+   * @param subscriptionDelay a function that returns an Observable that triggers the subscription to the source Observable
+   *                          once it emits any item
+   * @param itemDelay a function that returns an Observable for each item emitted by the source Observable, which is
+   *                  then used to delay the emission of that item by the resulting Observable until the Observable
+   *                  returned from `itemDelay` emits an item
+   * @return an Observable that delays the subscription and emissions of the source Observable via another
+   *         Observable on a per-item basis
+   */
+  def delay(subscriptionDelay: () => Observable[Any], itemDelay: T => Observable[Any]): Observable[T] = {
+    val subscriptionDelayJava = new Func0[rx.Observable[Any]] {
+      override def call(): rx.Observable[Any] =
+        subscriptionDelay().asJavaObservable.asInstanceOf[rx.Observable[Any]]
+    }
+    val itemDelayJava = new Func1[T, rx.Observable[Any]] {
+      override def call(t: T): rx.Observable[Any] =
+        itemDelay(t).asJavaObservable.asInstanceOf[rx.Observable[Any]]
+    }
+    toScalaObservable[T](asJavaObservable.delay[Any, Any](subscriptionDelayJava, itemDelayJava))
+  }
+
+  /**
+   * Return an Observable that delays the subscription to the source Observable by a given amount of time.
+   *
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/delaySubscription.png">
+   * 
+   * @param delay the time to delay the subscription
+   * @return an Observable that delays the subscription to the source Observable by the given amount
+   */
+  def delaySubscription(delay: Duration): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.delaySubscription(delay.length, delay.unit))
+  }
+
+  /**
+   * Return an Observable that delays the subscription to the source Observable by a given amount of time,
+   * both waiting and subscribing on a given Scheduler.
+   *
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/delaySubscription.s.png">
+   * 
+   * @param delay the time to delay the subscription
+   * @param scheduler the Scheduler on which the waiting and subscription will happen
+   * @return an Observable that delays the subscription to the source Observable by a given
+   *         amount, waiting and subscribing on the given Scheduler
+   */
+  def delaySubscription(delay: Duration, scheduler: Scheduler): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.delaySubscription(delay.length, delay.unit, scheduler))
+  }
+
+  /**
+   * Returns an Observable that emits the single item at a specified index in a sequence of emissions from a
+   * source Observbable.
+   * 
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/elementAt.png">
+   * 
+   * @param index
+   *            the zero-based index of the item to retrieve
+   * @return an Observable that emits a single item: the item at the specified position in the sequence of
+   *         those emitted by the source Observable
+   * @throws IndexOutOfBoundsException
+   *             if index is greater than or equal to the number of items emitted by the source
+   *             Observable, or index is less than 0
+   */
+  def elementAt(index: Int): Observable[T] = {
+    toScalaObservable[T](asJavaObservable.elementAt(index))
+  }
+
+  /**
+   * Returns an Observable that emits the item found at a specified index in a sequence of emissions from a
+   * source Observable, or a default item if that index is out of range.
+   * 
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/elementAtOrDefault.png">
+   * 
+   * @param index
+   *            the zero-based index of the item to retrieve
+   * @param default
+   *            the default item
+   * @return an Observable that emits the item at the specified position in the sequence emitted by the source
+   *         Observable, or the default item if that index is outside the bounds of the source sequence
+   * @throws IndexOutOfBoundsException
+   *             if {@code index} is less than 0
+   */
+  def elementAtOrDefault[U >: T](index: Int, default: U): Observable[U] = {
+    val thisJava = asJavaObservable.asInstanceOf[rx.Observable[U]]
+    toScalaObservable[U](thisJava.elementAtOrDefault(index, default))
+  }
+
+  /**
+   * Return an Observable that emits a single Map containing all items emitted by the source Observable,
+   * mapped by the keys returned by a specified {@code keySelector} function.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/toMap.png">
+   * <p>
+   * If more than one source item maps to the same key, the Map will contain the latest of those items.
+   *
+   * @param keySelector
+     * the function that extracts the key from a source item to be used in the Map
+   * @return an Observable that emits a single item: a Map containing the mapped items from the source
+   *         Observable
+   */
+  def toMap[K] (keySelector: T => K): Observable[Map[K, T]]= {
+    val thisJava = asJavaObservable.asInstanceOf[rx.Observable[T]]
+    val o: rx.Observable[util.Map[K, T]] = thisJava.toMap[K](keySelector)
+    toScalaObservable[util.Map[K,T]](o).map(m => m.toMap)
+  }
+
+  /**
+   * Return an Observable that emits a single Map containing values corresponding to items emitted by the
+   * source Observable, mapped by the keys returned by a specified {@code keySelector} function.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/toMap.png">
+   * <p>
+   * If more than one source item maps to the same key, the Map will contain a single entry that
+   * corresponds to the latest of those items.
+   *
+   * @param keySelector
+     *            the function that extracts the key from a source item to be used in the Map
+   * @param valueSelector
+     *            the function that extracts the value from a source item to be used in the Map
+   * @return an Observable that emits a single item: a HashMap containing the mapped items from the source
+   *         Observable
+   */
+  def toMap[K, V] (keySelector: T => K, valueSelector: T => V) : Observable[Map[K, V]] = {
+    val thisJava = asJavaObservable.asInstanceOf[rx.Observable[T]]
+    val o: rx.Observable[util.Map[K, V]] = thisJava.toMap[K, V](keySelector, valueSelector)
+    toScalaObservable[util.Map[K, V]](o).map(m => m.toMap)
+  }
+
+  /**
+   * Return an Observable that emits a single Map, returned by a specified {@code mapFactory} function, that
+   * contains keys and values extracted from the items emitted by the source Observable.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/toMap.png">
+   *
+   * @param keySelector
+     *            the function that extracts the key from a source item to be used in the Map
+   * @param valueSelector
+     *            the function that extracts the value from the source items to be used as value in the Map
+   * @param mapFactory
+     *            the function that returns a Map instance to be used
+   * @return an Observable that emits a single item: a Map that contains the mapped items emitted by the
+   *         source Observable
+   */
+  def toMap[K, V] (keySelector: T => K, valueSelector: T => V, mapFactory: () => Map[K, V]): Observable[Map[K, V]] = {
+    val thisJava = asJavaObservable.asInstanceOf[rx.Observable[T]]
+    val o: rx.Observable[util.Map[K, V]] = thisJava.toMap[K, V](keySelector, valueSelector)
+    toScalaObservable[util.Map[K, V]](o).map(m => mapFactory() ++ m.toMap)
+  }
+
+  /**
+   * Returns an Observable that emits a Boolean value that indicates whether `this` and `that` Observable sequences are the
+   * same by comparing the items emitted by each Observable pairwise.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/sequenceEqual.png">
+   *
+   * Note: this method uses `==` to compare elements. It's a bit different from RxJava which uses `Object.equals`.
+   *
+   * @param that the Observable to compare
+   * @return an Observable that emits a `Boolean` value that indicates whether the two sequences are the same
+   */
+  def sequenceEqual[U >: T](that: Observable[U]): Observable[Boolean] = {
+    sequenceEqual(that, (_1: U, _2: U) => _1 == _2)
+  }
+
+  /**
+   * Returns an Observable that emits a Boolean value that indicates whether `this` and `that` Observable sequences are the
+   * same by comparing the items emitted by each Observable pairwise based on the results of a specified `equality` function.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/sequenceEqual.png">
+   *
+   * @param that the Observable to compare
+   * @param equality a function used to compare items emitted by each Observable
+   * @return an Observable that emits a `Boolean` value that indicates whether the two sequences are the same based on the `equality` function.
+   */
+  def sequenceEqual[U >: T](that: Observable[U], equality: (U, U) => Boolean): Observable[Boolean] = {
+    val thisJava: rx.Observable[_ <: U] = this.asJavaObservable
+    val thatJava: rx.Observable[_ <: U] = that.asJavaObservable
+    val equalityJava: Func2[_ >: U, _ >: U, java.lang.Boolean] = equality
+    toScalaObservable[java.lang.Boolean](rx.Observable.sequenceEqual[U](thisJava, thatJava, equalityJava)).map(_.booleanValue)
+  }
+
+  /**
+   * Returns an Observable that emits records of the time interval between consecutive items emitted by the
+   * source Obsegrvable.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/timeInterval.png">
+   *
+   * @return an Observable that emits time interval information items
+   */
+  def timeInterval: Observable[(Duration, T)] = {
+    toScalaObservable(asJavaObservable.timeInterval())
+      .map(inv => (Duration(inv.getIntervalInMilliseconds, MILLISECONDS), inv.getValue))
+  }
+
+  /**
+   * Returns an Observable that emits records of the time interval between consecutive items emitted by the
+   * source Observable, where this interval is computed on a specified Scheduler.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/timeInterval.s.png">
+   *
+   * @param scheduler the [[Scheduler]] used to compute time intervals
+   * @return an Observable that emits time interval information items
+   */
+  def timeInterval(scheduler: Scheduler): Observable[(Duration, T)] = {
+    toScalaObservable(asJavaObservable.timeInterval(scheduler.asJavaScheduler))
+      .map(inv => (Duration(inv.getIntervalInMilliseconds, MILLISECONDS), inv.getValue))
+  }
+
+  /**
+   * Lift a function to the current Observable and return a new Observable that when subscribed to will pass
+   * the values of the current Observable through the function.
+   * <p>
+   * In other words, this allows chaining Observers together on an Observable for acting on the values within
+   * the Observable.
+   * {{{
+   * observable.map(...).filter(...).take(5).lift(new ObserverA()).lift(new ObserverB(...)).subscribe()
+   * }}}
+   *
+   * @param operator
+   * @return an Observable that emits values that are the result of applying the bind function to the values
+   *         of the current Observable
+   */
+  def lift[R](operator: Subscriber[R] => Subscriber[T]): Observable[R] = {
+    toScalaObservable(asJavaObservable.lift(toJavaOperator[T, R](operator)))
+  }
 }
 
 /**
@@ -2257,9 +3288,6 @@ object Observable {
    * should invoke the Observer's [[rx.lang.scala.Observer.onNext onNext]], [[rx.lang.scala.Observer.onError onError]], and [[rx.lang.scala.Observer.onCompleted onCompleted]] methods
    * appropriately.
    *
-   * A well-formed Observable must invoke either the Observer's `onCompleted` method
-   * exactly once or its `onError` method exactly once.
-   *
    * See <a href="http://go.microsoft.com/fwlink/?LinkID=205219">Rx Design Guidelines (PDF)</a>
    * for detailed information.
    *
@@ -2273,6 +3301,7 @@ object Observable {
    * @return
    *         an Observable that, when an [[rx.lang.scala.Observer]] subscribes to it, will execute the given function.
    */
+  @deprecated("Use `apply[T](Subscriber[T] => Unit)` instead", "0.17.0")
   def create[T](func: Observer[T] => Subscription): Observable[T] = {
     toScalaObservable[T](rx.Observable.create(new OnSubscribeFunc[T] {
       def onSubscribe(t1: rx.Observer[_ >: T]): rx.Subscription = {
@@ -2281,6 +3310,50 @@ object Observable {
     }))
   }
 
+  /*
+  Note: It's dangerous to have two overloads where one takes an `Observer[T] => Subscription`
+  function and the other takes a `Subscriber[T] => Unit` function, because expressions like
+  `o => Subscription{}` have both of these types.
+  So we call the old create method "create", and the new create method "apply".
+  Try it out yourself here:
+  def foo[T]: Unit = { 
+    val fMeant: Observer[T] => Subscription = o => Subscription{}
+    val fWrong: Subscriber[T] => Unit = o => Subscription{}
+  }
+  */
+
+  /**
+   * Returns an Observable that will execute the specified function when someone subscribes to it.
+   *
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/create.png">
+   *
+   * Write the function you pass so that it behaves as an Observable: It should invoke the
+   * Subscriber's `onNext`, `onError`, and `onCompleted` methods appropriately.
+   *
+   * You can `add` custom [[Subscription]]s to [[Subscriber]]. These [[Subscription]]s will be called
+   * <ul>
+   *   <li>when someone calls `unsubscribe`.</li>
+   *   <li>after `onCompleted` or `onError`.</li>
+   * </ul>
+   *
+   * See <a href="http://go.microsoft.com/fwlink/?LinkID=205219">Rx Design Guidelines (PDF)</a> for detailed
+   * information.
+   *
+   * See `<a href="https://github.com/Netflix/RxJava/blob/master/language-adaptors/rxjava-scala/src/examples/scala/rx/lang/scala/examples/RxScalaDemo.scala">RxScalaDemo</a>.createExampleGood`
+   * and `<a href="https://github.com/Netflix/RxJava/blob/master/language-adaptors/rxjava-scala/src/examples/scala/rx/lang/scala/examples/RxScalaDemo.scala">RxScalaDemo</a>.createExampleGood2`.
+   *
+   * @param T
+   *            the type of the items that this Observable emits
+   * @param f
+   *            a function that accepts a `Subscriber[T]`, and invokes its `onNext`,
+   *            `onError`, and `onCompleted` methods as appropriate
+   * @return an Observable that, when someone subscribes to it, will execute the specified
+   *         function
+   */
+  def apply[T](f: Subscriber[T] => Unit): Observable[T] = {
+    toScalaObservable(rx.Observable.create(f))
+  }
+  
   /**
    * Returns an Observable that invokes an [[rx.lang.scala.Observer]]'s [[rx.lang.scala.Observer.onError onError]]
    * method when the Observer subscribes to it.
@@ -2553,6 +3626,28 @@ object Observable {
    */
   def timer(initialDelay: Duration, period: Duration, scheduler: Scheduler): Observable[Long] = {
     toScalaObservable[java.lang.Long](rx.Observable.timer(initialDelay.toNanos, period.toNanos, duration.NANOSECONDS, scheduler)).map(_.longValue())
+  }
+
+  /**
+   * Constructs an Observable that creates a dependent resource object.
+   * <p>
+   * <img width="640" src="https://raw.github.com/wiki/Netflix/RxJava/images/rx-operators/using.png">
+   *
+   * @param resourceFactory the factory function to create a resource object that depends on the Observable
+   * @param observableFactory the factory function to obtain an Observable
+   * @return the Observable whose lifetime controls the lifetime of the dependent resource object
+   */
+  def using[T, Resource <: Subscription](resourceFactory: () => Resource, observableFactory: Resource => Observable[T]): Observable[T] = {
+    class ResourceSubscription(val resource: Resource) extends rx.Subscription {
+      def unsubscribe = resource.unsubscribe
+
+      def isUnsubscribed: Boolean = resource.isUnsubscribed
+    }
+
+    toScalaObservable(rx.Observable.using[T, ResourceSubscription](
+      () => new ResourceSubscription(resourceFactory()),
+      (s: ResourceSubscription) => observableFactory(s.resource).asJavaObservable
+    ))
   }
 
 }

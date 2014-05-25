@@ -15,7 +15,8 @@
  */
 package rx;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -36,7 +37,7 @@ public class ObservableWindowTests {
             public Observable<List<Integer>> call(Observable<Integer> xs) {
                 return xs.toList();
             }
-        })).toBlockingObservable().forEach(new Action1<List<Integer>>() {
+        })).toBlocking().forEach(new Action1<List<Integer>>() {
 
             @Override
             public void call(List<Integer> xs) {

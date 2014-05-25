@@ -16,6 +16,8 @@
 package rx.lang.scala.examples
 
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 import scala.concurrent.duration.Duration
 import scala.concurrent.duration.DurationInt
@@ -25,6 +27,7 @@ import scala.language.implicitConversions
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Ignore
 import org.junit.Test
 import org.scalatest.junit.JUnitSuite
@@ -32,6 +35,15 @@ import org.scalatest.junit.JUnitSuite
 import rx.lang.scala._
 import rx.lang.scala.schedulers._
 
+/**
+ * Demo how the different operators can be used. In Eclipse, you can right-click
+ * a test and choose "Run As" > "Scala JUnit Test".
+ * 
+ * For each operator added to Observable.java, we add a little usage demo here.
+ * It does not need to test the functionality (that's already done by the tests in
+ * RxJava core), but it should demonstrate how it can be used, to make sure that
+ * the method signature makes sense.
+ */
 @Ignore // Since this doesn't do automatic testing, don't increase build time unnecessarily
 class RxScalaDemo extends JUnitSuite {
 
@@ -78,13 +90,9 @@ class RxScalaDemo extends JUnitSuite {
     val first = Observable.from(List(10, 11, 12))
     val second = Observable.from(List(10, 11, 12))
 
-    val b1 = (first zip second) map (p => p._1 == p._2) forall (b => b)
+    val b = (first zip second) forall { case (a, b) => a == b }
 
-    val equality = (a: Any, b: Any) => a == b
-    val b2 = (first zip second) map (p => equality(p._1, p._2)) forall (b => b)
-
-    assertTrue(b1.toBlockingObservable.single)
-    assertTrue(b2.toBlockingObservable.single)
+    assertTrue(b.toBlockingObservable.single)
   }
 
   @Test def testObservableComparisonWithForComprehension() {
@@ -93,7 +101,7 @@ class RxScalaDemo extends JUnitSuite {
 
     val booleans = for ((n1, n2) <- (first zip second)) yield (n1 == n2)
 
-    val b1 = booleans.forall(_ == true) // without `== true`, b1 is assigned the forall function
+    val b1 = booleans.forall(identity)
 
     assertTrue(b1.toBlockingObservable.single)
   }
@@ -134,6 +142,12 @@ class RxScalaDemo extends JUnitSuite {
   @Test def rangeAndBufferExample() {
     val o = Observable.from(1 to 18)
     o.buffer(5).subscribe((l: Seq[Int]) => println(l.mkString("[", ", ", "]")))
+  }
+
+  @Test def bufferExample() {
+    val o = Observable.from(1 to 18).zip(Observable.interval(100 millis)).map(_._1)
+    val boundary = Observable.interval(500 millis)
+    o.buffer(boundary).toBlockingObservable.foreach((l: Seq[Int]) => println(l.mkString("[", ", ", "]")))
   }
 
   @Test def windowExample() {
@@ -216,7 +230,6 @@ class RxScalaDemo extends JUnitSuite {
     }).flatten.toBlockingObservable.foreach(println(_))
   }
 
-  @Ignore // TODO something's bad here
   @Test def timingTest1() {
     val numbersByModulo3 = Observable.interval(1000 millis).take(9).groupBy(_ % 3)
 
@@ -224,9 +237,13 @@ class RxScalaDemo extends JUnitSuite {
 
     (for ((modulo, numbers) <- numbersByModulo3) yield {
       println("Observable for modulo" + modulo + " started at t = " + (System.currentTimeMillis - t0))
-      numbers.take(1) // <- TODO very unexpected
-      //numbers
+      numbers.map(n => s"${n} is in the modulo-$modulo group")
     }).flatten.toBlockingObservable.foreach(println(_))
+  }
+  
+  @Test def testOlympicYearTicks() {
+    Olympics.yearTicks.subscribe(println(_))
+    waitFor(Olympics.yearTicks)
   }
 
   @Test def groupByExample() {
@@ -238,8 +255,10 @@ class RxScalaDemo extends JUnitSuite {
     firstMedalOfEachCountry.subscribe(medal => {
       println(s"${medal.country} wins its first medal in ${medal.year}")
     })
+    
+    Olympics.yearTicks.subscribe(year => println(s"\nYear $year starts."))
 
-    waitFor(firstMedalOfEachCountry)
+    waitFor(Olympics.yearTicks)
   }
 
   @Test def groupByUntilExample() {
@@ -250,34 +269,62 @@ class RxScalaDemo extends JUnitSuite {
   }
 
   @Test def combineLatestExample() {
-    val first_counter = Observable.interval(250 millis)
-    val second_counter = Observable.interval(550 millis)
-    val combined_counter = first_counter.combineLatest(second_counter,
+    val firstCounter = Observable.interval(250 millis)
+    val secondCounter = Observable.interval(550 millis)
+    val combinedCounter = firstCounter.combineLatest(secondCounter,
       (x: Long, y: Long) => List(x,y)) take 10
 
-    combined_counter subscribe {x => println(s"Emitted group: $x")}
+    combinedCounter subscribe {x => println(s"Emitted group: $x")}
+    waitFor(combinedCounter)
   }
 
+  @Test def olympicsExampleWithoutPublish() {
+    val medals = Olympics.mountainBikeMedals.doOnEach(_ => println("onNext"))
+    medals.subscribe(println(_)) // triggers an execution of medals Observable
+    waitFor(medals) // triggers another execution of medals Observable
+  }
 
-  @Test def olympicsExample() {
-    val medals = Olympics.mountainBikeMedals.publish
-    medals.subscribe(println(_))
+  @Test def olympicsExampleWithPublish() {
+    val medals = Olympics.mountainBikeMedals.doOnEach(_ => println("onNext")).publish
+    medals.subscribe(println(_)) // triggers an execution of medals Observable
     medals.connect
-    //waitFor(medals)
+    waitFor(medals) // triggers another execution of medals Observable
   }
 
   @Test def exampleWithoutPublish() {
-    val unshared = List(1 to 4).toObservable
+    val unshared = Observable.from(1 to 4)
     unshared.subscribe(n => println(s"subscriber 1 gets $n"))
     unshared.subscribe(n => println(s"subscriber 2 gets $n"))
   }
 
   @Test def exampleWithPublish() {
-    val unshared = List(1 to 4).toObservable
+    val unshared = Observable.from(1 to 4)
     val shared = unshared.publish
     shared.subscribe(n => println(s"subscriber 1 gets $n"))
     shared.subscribe(n => println(s"subscriber 2 gets $n"))
     shared.connect
+  }
+
+  @Test def exampleWithPublish2() {
+    val unshared = Observable.from(1 to 4)
+    val shared = unshared.publish(0)
+    shared.subscribe(n => println(s"subscriber 1 gets $n"))
+    shared.subscribe(n => println(s"subscriber 2 gets $n"))
+    shared.connect
+  }
+
+  @Test def exampleWithPublish3() {
+    val o = Observable.interval(100 millis).take(5).publish((o: Observable[Long]) => o.map(_ * 2))
+    o.subscribe(n => println(s"subscriber 1 gets $n"))
+    o.subscribe(n => println(s"subscriber 2 gets $n"))
+    Thread.sleep(1000)
+  }
+
+  @Test def exampleWithPublish4() {
+    val o = Observable.interval(100 millis).take(5).publish((o: Observable[Long]) => o.map(_ * 2), -1L)
+    o.subscribe(n => println(s"subscriber 1 gets $n"))
+    o.subscribe(n => println(s"subscriber 2 gets $n"))
+    Thread.sleep(1000)
   }
 
   def doLater(waitTime: Duration, action: () => Unit): Unit = {
@@ -296,11 +343,51 @@ class RxScalaDemo extends JUnitSuite {
 
   @Test def exampleWithReplay() {
     val numbers = Observable.interval(1000 millis).take(6)
-    val (startFunc, sharedNumbers) = numbers.replay
+    val sharedNumbers = numbers.replay
     sharedNumbers.subscribe(n => println(s"subscriber 1 gets $n"))
-    startFunc()
+    sharedNumbers.connect
     // subscriber 2 subscribes later but still gets all numbers
     doLater(3500 millis, () => { sharedNumbers.subscribe(n => println(s"subscriber 2 gets $n")) })
+    waitFor(sharedNumbers)
+  }
+
+  @Test def exampleWithReplay2() {
+    val numbers = Observable.interval(100 millis).take(10)
+    val sharedNumbers = numbers.replay(3)
+    sharedNumbers.subscribe(n => println(s"subscriber 1 gets $n"))
+    sharedNumbers.connect
+    // subscriber 2 subscribes later but only gets the 3 buffered numbers and the following numbers
+    Thread.sleep(700)
+    sharedNumbers.subscribe(n => println(s"subscriber 2 gets $n"))
+    waitFor(sharedNumbers)
+  }
+
+  @Test def exampleWithReplay3() {
+    val numbers = Observable.interval(100 millis).take(10)
+    val sharedNumbers = numbers.replay(300 millis)
+    sharedNumbers.subscribe(n => println(s"subscriber 1 gets $n"))
+    sharedNumbers.connect
+    // subscriber 2 subscribes later but only gets the buffered numbers and the following numbers
+    Thread.sleep(700)
+    sharedNumbers.subscribe(n => println(s"subscriber 2 gets $n"))
+    waitFor(sharedNumbers)
+  }
+
+  @Test def exampleWithReplay4() {
+    val numbers = Observable.interval(100 millis).take(10)
+    val sharedNumbers = numbers.replay(2, 300 millis)
+    sharedNumbers.subscribe(n => println(s"subscriber 1 gets $n"))
+    sharedNumbers.connect
+    // subscriber 2 subscribes later but only gets the buffered numbers and the following numbers
+    Thread.sleep(700)
+    sharedNumbers.subscribe(n => println(s"subscriber 2 gets $n"))
+    waitFor(sharedNumbers)
+  }
+
+  @Test def exampleWithReplay5() {
+    val numbers = Observable.interval(100 millis).take(10)
+    val sharedNumbers = numbers.replay[Long, Long]((o: Observable[Long]) => o.map(_ * 2))
+    sharedNumbers.subscribe(n => println(s"subscriber gets $n"))
     waitFor(sharedNumbers)
   }
 
@@ -372,6 +459,53 @@ class RxScalaDemo extends JUnitSuite {
     assertEquals(10, List(-1, 0, 1).toObservable.filter(condition).firstOrElse(10).toBlockingObservable.single)
   }
 
+  @Test def firstLastSingleExample() {
+    assertEquals(1, List(1, 2, 3, 4).toObservable.head.toBlockingObservable.single)
+    assertEquals(1, List(1, 2, 3, 4).toObservable.first.toBlockingObservable.single)
+    assertEquals(4, List(1, 2, 3, 4).toObservable.last.toBlockingObservable.single)
+    assertEquals(1, List(1).toObservable.single.toBlockingObservable.single)
+
+    assertEquals(1, List(1, 2, 3, 4).toObservable.toBlockingObservable.head)
+    assertEquals(1, List(1, 2, 3, 4).toObservable.toBlockingObservable.first)
+    assertEquals(4, List(1, 2, 3, 4).toObservable.toBlockingObservable.last)
+    assertEquals(1, List(1).toObservable.toBlockingObservable.single)
+  }
+
+  @Test def dropExample() {
+    val o = List(1, 2, 3, 4).toObservable
+    assertEquals(List(3, 4), o.drop(2).toBlockingObservable.toList)
+  }
+
+  @Test def dropWithTimeExample() {
+    val o = List(1, 2, 3, 4).toObservable.zip(
+      Observable.interval(500 millis, IOScheduler())).map(_._1) // emit every 500 millis
+    println(
+      o.drop(1250 millis, IOScheduler()).toBlockingObservable.toList // output List(3, 4)
+    )
+  }
+
+  @Test def dropRightExample() {
+    val o = List(1, 2, 3, 4).toObservable
+    assertEquals(List(1, 2), o.dropRight(2).toBlockingObservable.toList)
+  }
+
+  @Test def dropRightWithTimeExample() {
+    val o = List(1, 2, 3, 4).toObservable.zip(
+      Observable.interval(500 millis, IOScheduler())).map(_._1) // emit every 500 millis
+    println(
+      o.dropRight(750 millis, IOScheduler()).toBlockingObservable.toList // output List(1, 2)
+    )
+  }
+
+  @Test def dropUntilExample() {
+    val o = List("Alice", "Bob", "Carlos").toObservable.zip(
+      Observable.interval(700 millis, IOScheduler())).map(_._1) // emit every 700 millis
+    val other = List(1).toObservable.delay(1 seconds)
+    println(
+      o.dropUntil(other).toBlockingObservable.toList // output List("Bob", "Carlos")
+    )
+  }
+
   def square(x: Int): Int = {
     println(s"$x*$x is being calculated on thread ${Thread.currentThread().getId}")
     Thread.sleep(100) // calculating a square is heavy work :)
@@ -402,7 +536,7 @@ class RxScalaDemo extends JUnitSuite {
   }
 
   @Test def timestampExample() {
-    val timestamped = Observable.interval(100 millis).take(3).timestamp.toBlockingObservable
+    val timestamped = Observable.interval(100 millis).take(6).timestamp.toBlockingObservable
     for ((millis, value) <- timestamped if value > 0) {
       println(value + " at t = " + millis)
     }
@@ -441,37 +575,107 @@ class RxScalaDemo extends JUnitSuite {
     val oc3: rx.Notification[_ <: Int] = oc2.asJavaNotification
     val oc4: rx.Notification[_ <: Any] = oc2.asJavaNotification
   }
-  
-  @Test def elementAtReplacement() {
-    assertEquals("b", List("a", "b", "c").toObservable.drop(1).first.toBlockingObservable.single)
-  }
-
-  @Test def elementAtOrDefaultReplacement() {
-    assertEquals("b", List("a", "b", "c").toObservable.drop(1).firstOrElse("!").toBlockingObservable.single)
-    assertEquals("!!", List("a", "b", "c").toObservable.drop(10).firstOrElse("!!").toBlockingObservable.single)
-  }
 
   @Test def takeWhileWithIndexAlternative {
     val condition = true
     List("a", "b").toObservable.zipWithIndex.takeWhile{case (elem, index) => condition}.map(_._1)
   }
   
-  @Test def createExample() {
+  def calculateElement(index: Int): String = {
+    println("omg I'm calculating so hard")
+    index match {
+      case 0 => "a"
+      case 1 => "b"
+      case _ => throw new IllegalArgumentException
+    }
+  }
+  
+  /**
+   * This is a bad way of using Observable.create, because even if the consumer unsubscribes,
+   * all elements are calculated.
+   */
+  @Test def createExampleBad() {
     val o = Observable.create[String](observer => {
-      // this is bad because you cannot unsubscribe!
-      observer.onNext("a")
-      observer.onNext("b")
+      observer.onNext(calculateElement(0))
+      observer.onNext(calculateElement(1))
       observer.onCompleted()
       Subscription {}
     })
-    o.subscribe(println(_))
+    o.take(1).subscribe(println(_))
+  }
+  
+  /**
+   * This is the good way of doing it: If the consumer unsubscribes, no more elements are 
+   * calculated.
+   */
+  @Test def createExampleGood() {
+    val o = Observable[String](subscriber => {
+      var i = 0
+      while (i < 2 && !subscriber.isUnsubscribed) {
+        subscriber.onNext(calculateElement(i))
+        i += 1
+      }
+      if (!subscriber.isUnsubscribed) subscriber.onCompleted()
+    })
+    o.take(1).subscribe(println(_))
+  }
+
+  @Test def createExampleGood2() {
+    import scala.io.{Codec, Source}
+
+    val rxscala = Observable[String](subscriber => {
+      try {
+        val input = new java.net.URL("http://rxscala.github.io/").openStream()
+        subscriber.add(Subscription {
+          input.close()
+        })
+        Source.fromInputStream(input)(Codec.UTF8).getLines()
+          .takeWhile(_ => !subscriber.isUnsubscribed)
+          .foreach(subscriber.onNext(_))
+        if (!subscriber.isUnsubscribed) {
+          subscriber.onCompleted()
+        }
+      }
+      catch {
+        case e: Throwable => if (!subscriber.isUnsubscribed) subscriber.onError(e)
+      }
+    }).subscribeOn(IOScheduler())
+
+    val count = rxscala.flatMap(_.split("\\W+").toSeq.toObservable)
+      .map(_.toLowerCase)
+      .filter(_ == "rxscala")
+      .size
+    println(s"RxScala appears ${count.toBlockingObservable.single} times in http://rxscala.github.io/")
   }
 
   def output(s: String): Unit = println(s)
 
-  // blocks until obs has completed
+  /** Subscribes to obs and waits until obs has completed. Note that if you subscribe to
+   *  obs yourself and also call waitFor(obs), all side-effects of subscribing to obs
+   *  will happen twice.
+   */
   def waitFor[T](obs: Observable[T]): Unit = {
     obs.toBlockingObservable.toIterable.last
+  }
+
+  @Test def doOnTerminateExample(): Unit = {
+    val o = List("red", "green", "blue").toObservable.doOnTerminate(() => println("terminate"))
+    o.subscribe(v => println(v), e => e.printStackTrace, () => println("onCompleted"))
+    // red
+    // green
+    // blud
+    // terminate
+    // onCompleted
+  }
+
+  @Test def finallyDoExample(): Unit = {
+    val o = List("red", "green", "blue").toObservable.finallyDo(() => println("finally"))
+    o.subscribe(v => println(v), e => e.printStackTrace, () => println("onCompleted"))
+    // red
+    // green
+    // blud
+    // onCompleted
+    // finally
   }
 
   @Test def timeoutExample(): Unit = {
@@ -493,6 +697,294 @@ class RxScalaDemo extends JUnitSuite {
     val other = List(100L, 200L, 300L).toObservable
     val result = Observable.interval(100 millis).timeout(firstTimeoutSelector, timeoutSelector, other).toBlockingObservable.toList
     println(result)
+  }
+
+  @Test def ambExample(): Unit = {
+    val o1 = List(100L, 200L, 300L).toObservable.delay(4 seconds)
+    val o2 = List(1000L, 2000L, 3000L).toObservable.delay(2 seconds)
+    val result = o1.amb(o2).toBlockingObservable.toList
+    println(result)
+  }
+
+  @Test def delayExample(): Unit = {
+    val o = List(100L, 200L, 300L).toObservable.delay(2 seconds)
+    val result = o.toBlockingObservable.toList
+    println(result)
+  }
+
+  @Test def delayExample2(): Unit = {
+    val o = List(100L, 200L, 300L).toObservable.delay(2 seconds, IOScheduler())
+    val result = o.toBlockingObservable.toList
+    println(result)
+  }
+
+  @Test def delayExample3(): Unit = {
+    val o = List(100, 500, 200).toObservable.delay(
+      (i: Int) => Observable.items(i).delay(i millis)
+    )
+    o.toBlockingObservable.foreach(println(_))
+  }
+
+  @Test def delayExample4(): Unit = {
+    val o = List(100, 500, 200).toObservable.delay(
+      () => Observable.interval(500 millis).take(1),
+      (i: Int) => Observable.items(i).delay(i millis)
+    )
+    o.toBlockingObservable.foreach(println(_))
+  }
+
+  @Test def delaySubscriptionExample(): Unit = {
+    val o = List(100L, 200L, 300L).toObservable.delaySubscription(2 seconds)
+    val result = o.toBlockingObservable.toList
+    println(result)
+  }
+
+  @Test def delaySubscriptionExample2(): Unit = {
+    val o = List(100L, 200L, 300L).toObservable.delaySubscription(2 seconds, IOScheduler())
+    val result = o.toBlockingObservable.toList
+    println(result)
+  }
+
+  @Test def elementAtExample(): Unit = {
+    val o = List("red", "green", "blue").toObservable
+    println(o.elementAt(2).toBlockingObservable.single)
+  }
+
+  @Test def elementAtOrDefaultExample(): Unit = {
+    val o : Observable[Seq[Char]] = List("red".toList, "green".toList, "blue".toList).toObservable.elementAtOrDefault(3, "black".toSeq)
+    println(o.toBlockingObservable.single)
+  }
+
+  @Test def toMapExample1(): Unit = {
+    val o : Observable[String] = List("alice", "bob", "carol").toObservable
+    val keySelector = (s: String) => s.head
+    val m = o.toMap(keySelector)
+    println(m.toBlockingObservable.single)
+  }
+
+  @Test def toMapExample2(): Unit = {
+    val o : Observable[String] = List("alice", "bob", "carol").toObservable
+    val keySelector = (s: String) => s.head
+    val valueSelector = (s: String) => s.tail
+    val m = o.toMap(keySelector, valueSelector)
+    println(m.toBlockingObservable.single)
+  }
+
+  @Test def toMapExample3(): Unit = {
+    val o : Observable[String] = List("alice", "bob", "carol").toObservable
+    val keySelector = (s: String) => s.head
+    val valueSelector = (s: String) => s.tail
+    val mapFactory = () => Map(('s',"tart"))
+    val m = o.toMap(keySelector, valueSelector, mapFactory)
+    println(m.toBlockingObservable.single)
+  }
+
+  @Test def containsExample(): Unit = {
+    val o1 = List(1, 2, 3).toObservable.contains(2)
+    assertTrue(o1.toBlockingObservable.single)
+
+    val o2 = List(1, 2, 3).toObservable.contains(4)
+    assertFalse(o2.toBlockingObservable.single)
+  }
+
+  @Test def repeatExample1(): Unit = {
+    val o : Observable[String] = List("alice", "bob", "carol").toObservable.repeat.take(6)
+    assertEquals(List("alice", "bob", "carol", "alice", "bob", "carol"), o.toBlockingObservable.toList)
+  }
+
+  @Test def repeatExample2(): Unit = {
+    val o : Observable[String] = List("alice", "bob", "carol").toObservable.repeat(2)
+    assertEquals(List("alice", "bob", "carol", "alice", "bob", "carol"), o.toBlockingObservable.toList)
+  }
+
+  @Test def retryExample1(): Unit = {
+    val o : Observable[String] = List("alice", "bob", "carol").toObservable
+    assertEquals(List("alice", "bob", "carol"), o.retry.toBlockingObservable.toList)
+  }
+
+  @Test def retryExample2(): Unit = {
+    val o : Observable[String] = List("alice", "bob", "carol").toObservable
+    assertEquals(List("alice", "bob", "carol"), o.retry(3).toBlockingObservable.toList)
+  }
+
+  @Test def liftExample1(): Unit = {
+    // Add "No. " in front of each item
+    val o = List(1, 2, 3).toObservable.lift {
+      subscriber: Subscriber[String] =>
+        Subscriber[Int](
+          subscriber,
+          (v: Int)  => subscriber.onNext("No. " + v),
+          e => subscriber.onError(e),
+          () => subscriber.onCompleted
+        )
+    }.toBlockingObservable.toList
+    println(o)
+  }
+
+  @Test def liftExample2(): Unit = {
+    // Split the input Strings with " "
+    val splitStringsWithSpace = (subscriber: Subscriber[String]) => {
+      Subscriber[String](
+        subscriber,
+        (v: String) => v.split(" ").foreach(subscriber.onNext(_)),
+        e => subscriber.onError(e),
+        () => subscriber.onCompleted
+      )
+    }
+
+    // Convert the input Strings to Chars
+    val stringsToChars = (subscriber: Subscriber[Char]) => {
+      Subscriber[String](
+        subscriber,
+        (v: String) => v.foreach(subscriber.onNext(_)),
+        e => subscriber.onError(e),
+        () => subscriber.onCompleted
+      )
+    }
+
+    // Skip the first n items. If the length of source is less than n, throw an IllegalArgumentException
+    def skipWithException[T](n: Int) = (subscriber: Subscriber[T]) => {
+      var count = 0
+      Subscriber[T](
+        subscriber,
+        (v: T) => {
+          if (count >= n) subscriber.onNext(v)
+          count += 1
+        },
+        e => subscriber.onError(e),
+        () => if (count < n) subscriber.onError(new IllegalArgumentException("There is no enough items")) else subscriber.onCompleted
+      )
+    }
+
+    val o = List("RxJava – Reactive Extensions for the JVM").toObservable
+      .lift(splitStringsWithSpace)
+      .map(_.toLowerCase)
+      .lift(stringsToChars)
+      .filter(_.isLetter)
+      .lift(skipWithException(100))
+    try {
+      o.toBlockingObservable.toList
+    }
+    catch {
+      case e: IllegalArgumentException => println("IllegalArgumentException from skipWithException")
+    }
+  }
+
+  @Test def multicastExample1(): Unit = {
+    val unshared = Observable.from(1 to 4)
+    val shared = unshared.multicast(Subject())
+    shared.subscribe(n => println(s"subscriber 1 gets $n"))
+    shared.subscribe(n => println(s"subscriber 2 gets $n"))
+    shared.connect
+  }
+
+  @Test def multicastExample2(): Unit = {
+    val unshared = Observable.from(1 to 4)
+    val shared = unshared.multicast[Int, String](() => Subject(), o => o.map("No. " + _))
+    shared.subscribe(n => println(s"subscriber 1 gets $n"))
+    shared.subscribe(n => println(s"subscriber 2 gets $n"))
+  }
+
+  @Test def startWithExample(): Unit = {
+    val o1 = List(3, 4).toObservable
+    val o2 = 1 +: 2 +: o1
+    assertEquals(List(1, 2, 3, 4), o2.toBlockingObservable.toList)
+  }
+
+  @Test def appendExample(): Unit = {
+    val o = List(1, 2).toObservable :+ 3 :+ 4
+    assertEquals(List(1, 2, 3, 4), o.toBlockingObservable.toList)
+  }
+
+  @Test def sequenceEqualExampe(): Unit = {
+    val o1 = List(1, 2, 3).toObservable
+    val o2 = List(1, 2, 3).toObservable
+    val o3 = List(1, 2).toObservable
+    val o4 = List(1.0, 2.0, 3.0).toObservable
+    assertTrue(o1.sequenceEqual(o2).toBlockingObservable.single)
+    assertFalse(o1.sequenceEqual(o3).toBlockingObservable.single)
+    assertTrue(o1.sequenceEqual(o4).toBlockingObservable.single)
+  }
+
+  @Test def takeExample(): Unit = {
+    val o = (1 to 20).toObservable
+      .zip(Observable.interval(300 millis))
+      .map(_._1)
+      .take(2 seconds)
+    println(o.toBlockingObservable.toList)
+  }
+
+  @Test def takeRightExample(): Unit = {
+    val o = (1 to 6).toObservable.takeRight(3)
+    assertEquals(List(4, 5, 6), o.toBlockingObservable.toList)
+  }
+
+  @Test def takeRightExample2(): Unit = {
+    val o = (1 to 10).toObservable
+      .zip(Observable.interval(100 millis))
+      .map(_._1)
+      .takeRight(300 millis)
+    println(o.toBlockingObservable.toList)
+  }
+
+  @Test def takeRightExample3(): Unit = {
+    val o = (1 to 10).toObservable
+      .zip(Observable.interval(100 millis))
+      .map(_._1)
+      .takeRight(2, 300 millis)
+    println(o.toBlockingObservable.toList)
+  }
+
+  @Test def timeIntervalExample(): Unit = {
+    val o = (1 to 10).toObservable
+      .zip(Observable.interval(100 millis))
+      .map(_._1)
+      .timeInterval
+    println(o.toBlockingObservable.toList)
+  }
+
+  @Test def schedulerExample1(): Unit = {
+    val latch = new CountDownLatch(1)
+    val worker = IOScheduler().createWorker
+    worker.schedule {
+      println("Hello from Scheduler")
+      latch.countDown()
+    }
+    latch.await(5, TimeUnit.SECONDS)
+  }
+
+  @Test def schedulerExample2(): Unit = {
+    val latch = new CountDownLatch(1)
+    val worker = IOScheduler().createWorker
+    worker.schedule(1 seconds) {
+      println("Hello from Scheduler after 1 second")
+      latch.countDown()
+    }
+    latch.await(5, TimeUnit.SECONDS)
+  }
+
+  @Test def schedulerExample3(): Unit = {
+    val worker = IOScheduler().createWorker
+    var no = 1
+    val subscription = worker.schedulePeriodically(initialDelay = 1 seconds, period = 100 millis) {
+      println(s"Hello(${no}) from Scheduler")
+      no += 1
+    }
+    TimeUnit.SECONDS.sleep(2)
+    subscription.unsubscribe()
+  }
+
+  @Test def schedulerExample4(): Unit = {
+    val worker = IOScheduler().createWorker
+    var no = 1
+    def hello: Unit = {
+      println(s"Hello(${no}) from Scheduler")
+      no += 1
+      worker.schedule(100 millis)(hello)
+    }
+    val subscription = worker.schedule(1 seconds)(hello)
+    TimeUnit.SECONDS.sleep(2)
+    subscription.unsubscribe()
   }
 
 }

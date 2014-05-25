@@ -15,11 +15,14 @@
  */
 package rx.operators;
 
-import static org.mockito.Matchers.*;
-import static org.mockito.Mockito.*;
+import static org.mockito.Matchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.NoSuchElementException;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -29,6 +32,7 @@ import org.mockito.MockitoAnnotations;
 import rx.Observable;
 import rx.Observer;
 import rx.Subscriber;
+import rx.exceptions.OnErrorNotImplementedException;
 import rx.functions.Action1;
 import rx.functions.Func1;
 import rx.functions.Func2;
@@ -171,7 +175,7 @@ public class OperatorMapTest {
             public void call(Throwable t1) {
                 t1.printStackTrace();
             }
-            
+
         });
 
         m.subscribe(stringObserver);
@@ -189,7 +193,7 @@ public class OperatorMapTest {
                     public Integer call(Integer arg0) {
                         throw new IllegalArgumentException("any error");
                     }
-                }).toBlockingObservable().single();
+                }).toBlocking().single();
     }
 
     @Test(expected = IllegalArgumentException.class)
@@ -206,13 +210,13 @@ public class OperatorMapTest {
                 });
 
         // block for response, expecting exception thrown
-        m.toBlockingObservable().last();
+        m.toBlocking().last();
     }
 
     /**
-     * While mapping over range(1,1).last() we expect IllegalArgumentException since the sequence is empty.
+     * While mapping over range(1,0).last() we expect NoSuchElementException since the sequence is empty.
      */
-    @Test(expected = IllegalArgumentException.class)
+    @Test(expected = NoSuchElementException.class)
     public void testErrorPassesThruMap() {
         Observable.range(1, 0).last().map(new Func1<Integer, Integer>() {
 
@@ -221,7 +225,7 @@ public class OperatorMapTest {
                 return i;
             }
 
-        }).toBlockingObservable().single();
+        }).toBlocking().single();
     }
 
     /**
@@ -236,7 +240,7 @@ public class OperatorMapTest {
                 return i;
             }
 
-        }).toBlockingObservable().single();
+        }).toBlocking().single();
     }
 
     /**
@@ -252,10 +256,10 @@ public class OperatorMapTest {
                 return i / 0;
             }
 
-        }).toBlockingObservable().single();
+        }).toBlocking().single();
     }
 
-    @Test(expected = RuntimeException.class)
+    @Test(expected = OnErrorNotImplementedException.class)
     public void verifyExceptionIsThrownIfThereIsNoExceptionHandler() {
 
         Observable.OnSubscribe<Object> creator = new Observable.OnSubscribe<Object>() {
@@ -273,7 +277,6 @@ public class OperatorMapTest {
 
             @Override
             public Observable<Object> call(Object object) {
-
                 return Observable.from(object);
             }
         };
@@ -299,7 +302,12 @@ public class OperatorMapTest {
             }
         };
 
-        Observable.create(creator).flatMap(manyMapper).map(mapper).subscribe(onNext);
+        try {
+            Observable.create(creator).flatMap(manyMapper).map(mapper).subscribe(onNext);
+        } catch (RuntimeException e) {
+            e.printStackTrace();
+            throw e;
+        }
     }
 
     private static Map<String, String> getMap(String prefix) {

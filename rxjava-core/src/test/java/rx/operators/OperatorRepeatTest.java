@@ -15,9 +15,13 @@
  */
 package rx.operators;
 
-import static org.junit.Assert.*;
-import static org.mockito.Matchers.*;
-import static org.mockito.Mockito.*;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.mockito.Matchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -25,13 +29,11 @@ import org.junit.Test;
 
 import rx.Observable;
 import rx.Observable.OnSubscribe;
-import rx.Observable.OnSubscribeFunc;
 import rx.Observer;
 import rx.Subscriber;
-import rx.Subscription;
+import rx.exceptions.TestException;
 import rx.functions.Func1;
 import rx.schedulers.Schedulers;
-import rx.subscriptions.Subscriptions;
 
 public class OperatorRepeatTest {
 
@@ -39,15 +41,14 @@ public class OperatorRepeatTest {
     public void testRepetition() {
         int NUM = 10;
         final AtomicInteger count = new AtomicInteger();
-        int value = Observable.create(new OnSubscribeFunc<Integer>() {
+        int value = Observable.create(new OnSubscribe<Integer>() {
 
             @Override
-            public Subscription onSubscribe(Observer<? super Integer> o) {
+            public void call(final Subscriber<? super Integer> o) {
                 o.onNext(count.incrementAndGet());
                 o.onCompleted();
-                return Subscriptions.empty();
             }
-        }).repeat(Schedulers.computation()).take(NUM).toBlockingObservable().last();
+        }).repeat(Schedulers.computation()).take(NUM).toBlocking().last();
 
         assertEquals(NUM, value);
     }
@@ -55,13 +56,13 @@ public class OperatorRepeatTest {
     @Test(timeout = 2000)
     public void testRepeatTake() {
         Observable<Integer> xs = Observable.from(1, 2);
-        Object[] ys = xs.repeat(Schedulers.newThread()).take(4).toList().toBlockingObservable().last().toArray();
+        Object[] ys = xs.repeat(Schedulers.newThread()).take(4).toList().toBlocking().last().toArray();
         assertArrayEquals(new Object[] { 1, 2, 1, 2 }, ys);
     }
 
     @Test(timeout = 20000)
     public void testNoStackOverFlow() {
-        Observable.from(1).repeat(Schedulers.newThread()).take(100000).toBlockingObservable().last();
+        Observable.from(1).repeat(Schedulers.newThread()).take(100000).toBlocking().last();
     }
 
     @Test
@@ -91,7 +92,7 @@ public class OperatorRepeatTest {
                 return t1;
             }
 
-        }).take(4).toList().toBlockingObservable().last().toArray();
+        }).take(4).toList().toBlocking().last().toArray();
 
         assertEquals(2, counter.get());
         assertArrayEquals(new Object[] { 1, 2, 1, 2 }, ys);
@@ -124,9 +125,9 @@ public class OperatorRepeatTest {
         @SuppressWarnings("unchecked")
                 Observer<Object> o = mock(Observer.class);
         
-        Observable.error(new CustomException()).repeat(10).subscribe(o);
+        Observable.error(new TestException()).repeat(10).subscribe(o);
         
-        verify(o).onError(any(CustomException.class));
+        verify(o).onError(any(TestException.class));
         verify(o, never()).onNext(any());
         verify(o, never()).onCompleted();
         
@@ -141,8 +142,5 @@ public class OperatorRepeatTest {
         verify(o).onCompleted();
         verify(o, never()).onNext(any());
         verify(o, never()).onError(any(Throwable.class));
-    }
-    
-    private static class CustomException extends RuntimeException {
     }
 }

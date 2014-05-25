@@ -1,5 +1,5 @@
 /**
- * Copyright 2013 Netflix, Inc.
+ * Copyright 2014 Netflix, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,12 +19,13 @@ import rx.Observable;
 import rx.Observer;
 import rx.Subscriber;
 import rx.android.schedulers.AndroidSchedulers;
-import rx.android.subscriptions.AndroidSubscriptions;
 import rx.functions.Action0;
+import rx.subscriptions.Subscriptions;
+
 import android.app.Activity;
-import android.os.Looper;
 import android.util.Log;
 
+@Deprecated
 public class OperatorObserveFromAndroidComponent {
 
     public static <T> Observable<T> observeFromAndroidComponent(Observable<T> source, android.app.Fragment fragment) {
@@ -44,8 +45,8 @@ public class OperatorObserveFromAndroidComponent {
         private static final String LOG_TAG = "AndroidObserver";
 
         private final Observable<T> source;
-        private AndroidComponent componentRef;
-        private Observer<? super T> observerRef;
+        private volatile AndroidComponent componentRef;
+        private volatile Observer<? super T> observerRef;
 
         private OnSubscribeBase(Observable<T> source, AndroidComponent component) {
             this.source = source;
@@ -54,9 +55,9 @@ public class OperatorObserveFromAndroidComponent {
 
         private void log(String message) {
             if (Log.isLoggable(LOG_TAG, Log.DEBUG)) {
-                Log.d(LOG_TAG, "componentRef = " + componentRef);
-                Log.d(LOG_TAG, "observerRef = " + observerRef);
-                Log.d(LOG_TAG, message);
+                String thread = Thread.currentThread().getName();
+                Log.d(LOG_TAG, "[" + thread + "] componentRef = " + componentRef + "; observerRef = " + observerRef);
+                Log.d(LOG_TAG, "[" + thread + "]" + message);
             }
         }
 
@@ -65,8 +66,7 @@ public class OperatorObserveFromAndroidComponent {
         }
 
         @Override
-        public void call(Subscriber<? super T> subscriber) {
-            assertUiThread();
+        public void call(final Subscriber<? super T> subscriber) {
             observerRef = subscriber;
             source.observeOn(AndroidSchedulers.mainThread()).subscribe(new Subscriber<T>(subscriber) {
                 @Override
@@ -74,6 +74,7 @@ public class OperatorObserveFromAndroidComponent {
                     if (componentRef != null && isComponentValid(componentRef)) {
                         observerRef.onCompleted();
                     } else {
+                        unsubscribe();
                         log("onComplete: target component released or detached; dropping message");
                     }
                 }
@@ -83,6 +84,7 @@ public class OperatorObserveFromAndroidComponent {
                     if (componentRef != null && isComponentValid(componentRef)) {
                         observerRef.onError(e);
                     } else {
+                        unsubscribe();
                         log("onError: target component released or detached; dropping message");
                     }
                 }
@@ -92,11 +94,12 @@ public class OperatorObserveFromAndroidComponent {
                     if (componentRef != null && isComponentValid(componentRef)) {
                         observerRef.onNext(args);
                     } else {
+                        unsubscribe();
                         log("onNext: target component released or detached; dropping message");
                     }
                 }
             });
-            subscriber.add(AndroidSubscriptions.unsubscribeInUiThread(new Action0() {
+            subscriber.add(Subscriptions.create(new Action0() {
                 @Override
                 public void call() {
                     log("unsubscribing from source sequence");
@@ -108,12 +111,6 @@ public class OperatorObserveFromAndroidComponent {
         private void releaseReferences() {
             observerRef = null;
             componentRef = null;
-        }
-
-        private void assertUiThread() {
-            if (Looper.getMainLooper() != Looper.myLooper()) {
-                throw new IllegalStateException("Observers must subscribe from the main UI thread, but was " + Thread.currentThread());
-            }
         }
     }
 

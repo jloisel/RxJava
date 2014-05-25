@@ -15,7 +15,10 @@
  */
 package rx;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -36,7 +39,7 @@ public class ObservableDoOnTest {
             public void call(String v) {
                 r.set(v);
             }
-        }).toBlockingObservable().single();
+        }).toBlocking().single();
 
         assertEquals("one", output);
         assertEquals("one", r.get());
@@ -53,7 +56,7 @@ public class ObservableDoOnTest {
                 public void call(Throwable v) {
                     r.set(v);
                 }
-            }).toBlockingObservable().single();
+            }).toBlocking().single();
             fail("expected exception, not a return value");
         } catch (Throwable e) {
             t = e;
@@ -72,7 +75,7 @@ public class ObservableDoOnTest {
             public void call() {
                 r.set(true);
             }
-        }).toBlockingObservable().single();
+        }).toBlocking().single();
 
         assertEquals("one", output);
         assertTrue(r.get());
